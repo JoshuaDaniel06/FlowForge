@@ -1348,3 +1348,48 @@ def save_pipeline_contracts(pipeline_id: str, rules: list) -> list:
     for r in rules:
         saved_rules.append(create_data_contract(pipeline_id, r))
     return saved_rules
+
+
+# =========================================================
+# STAGE 9 - FEATURE 8: SCHEMA DETECTION PERSISTENCE
+# =========================================================
+
+def accept_pipeline_schema(pipeline_id: str, current_schema: list) -> list:
+    """
+    Accept new schema for a pipeline by synchronizing data_contracts in PostgreSQL.
+    Creates or updates contract rules to match the new incoming schema columns and types.
+    """
+    existing_rules = {r["column_name"]: r for r in list_data_contracts(pipeline_id)}
+
+    updated_rules = []
+    for col_info in current_schema:
+        col_name = col_info.get("name") or col_info.get("column")
+        if not col_name:
+            continue
+        col_type = col_info.get("type", "string")
+        has_nulls = bool(col_info.get("has_nulls", True))
+
+        if col_name in existing_rules:
+            rule = existing_rules[col_name]
+            updated = update_data_contract(rule["id"], {
+                "expected_type": col_type,
+                "allow_null": has_nulls or rule["allow_null"],
+            })
+            updated_rules.append(updated)
+        else:
+            created = create_data_contract(pipeline_id, {
+                "rule_name": f"Schema Rule ({col_name})",
+                "column_name": col_name,
+                "expected_type": col_type,
+                "is_required": True,
+                "allow_null": has_nulls,
+                "is_unique": False,
+                "permitted_values": [],
+            })
+    # If any previous rule is absent in the new accepted schema, relax its requirement to optional
+    current_col_names = {col_info.get("name") or col_info.get("column") for col_info in current_schema if (col_info.get("name") or col_info.get("column"))}
+    for old_col, old_rule in existing_rules.items():
+        if old_col not in current_col_names and old_rule.get("is_required"):
+            updated_rules.append(update_data_contract(old_rule["id"], {"is_required": False}))
+
+    return updated_rules

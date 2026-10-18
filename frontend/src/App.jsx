@@ -36,6 +36,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Folder,
+  GitCompare,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -3642,6 +3643,605 @@ function DataContractModal({
 
 
 /* =========================================================
+   STAGE 9: SCHEMA CHANGE DETECTION & DRIFT MODAL (FEATURE 8)
+========================================================= */
+
+function SchemaCheckModal({
+  isOpen,
+  onClose,
+  pipelineId,
+  pipelineName,
+  records = null,
+  contractRules = [],
+  onSchemaAccepted,
+  onOpenContractValidation,
+}) {
+  const [loading, setLoading] = useState(false);
+  const [schemaCheck, setSchemaCheck] = useState(null);
+  const [activeTab, setActiveTab] = useState("all");
+  const [banner, setBanner] = useState(null);
+  const [isAccepting, setIsAccepting] = useState(false);
+  const [showConfirmAccept, setShowConfirmAccept] = useState(false);
+
+  const fetchSchemaCheck = async () => {
+    setLoading(true);
+    setBanner(null);
+    try {
+      let res;
+      if (pipelineId) {
+        res = await fetch(`${API_URL}/pipelines/${pipelineId}/schema-check`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            records: records || null,
+            contract_rules: contractRules || null,
+          }),
+        });
+      } else {
+        res = await fetch(`${API_URL}/schema/detect-changes`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            records: records || null,
+            contract_rules: contractRules || null,
+          }),
+        });
+      }
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || "Failed to check schema.");
+      }
+
+      const data = await res.json();
+      setSchemaCheck(data.schema_check);
+    } catch (err) {
+      console.error(err);
+      setBanner({ type: "danger", text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchSchemaCheck();
+      setShowConfirmAccept(false);
+    }
+  }, [isOpen, pipelineId]);
+
+  const handleConfirmAcceptSchema = async () => {
+    if (!pipelineId) {
+      setBanner({ type: "warning", text: "Please save the pipeline before accepting schema updates to PostgreSQL." });
+      setShowConfirmAccept(false);
+      return;
+    }
+
+    setIsAccepting(true);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/${pipelineId}/accept-schema`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          records: records || null,
+          new_schema: schemaCheck?.current_schema || null,
+        }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || "Failed to accept new schema.");
+      }
+
+      const data = await res.json();
+      setBanner({
+        type: "success",
+        text: `Schema accepted! Synchronized ${data.updated_contracts?.length || 0} contract rules in PostgreSQL database.`,
+      });
+      setShowConfirmAccept(false);
+      if (onSchemaAccepted) {
+        onSchemaAccepted(data.updated_contracts);
+      }
+      fetchSchemaCheck();
+    } catch (err) {
+      console.error(err);
+      setBanner({ type: "danger", text: err.message });
+      setShowConfirmAccept(false);
+    } finally {
+      setIsAccepting(false);
+    }
+  };
+
+  const handleDownloadDiffReport = () => {
+    if (!schemaCheck) return;
+    const reportData = {
+      pipeline_id: pipelineId,
+      pipeline_name: pipelineName,
+      generated_at: new Date().toISOString(),
+      compatibility_status: schemaCheck.compatibility_status,
+      summary: schemaCheck.summary,
+      stats: schemaCheck.stats,
+      missing_columns: schemaCheck.missing_columns,
+      unexpected_columns: schemaCheck.unexpected_columns,
+      type_changes: schemaCheck.type_changes,
+      compatible_columns: schemaCheck.compatible_columns,
+      current_schema: schemaCheck.current_schema,
+      expected_schema: schemaCheck.expected_schema,
+    };
+    const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `schema_drift_report_${pipelineId || "workbench"}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  if (!isOpen) return null;
+
+  const totalDiffs =
+    (schemaCheck?.missing_columns?.length || 0) +
+    (schemaCheck?.unexpected_columns?.length || 0) +
+    (schemaCheck?.type_changes?.length || 0);
+
+  return (
+    <div className="cleaned-customer-overlay" onClick={onClose}>
+      <div
+        className="cleaned-customer-modal"
+        style={{ maxWidth: "920px", maxHeight: "90vh", display: "flex", flexDirection: "column" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="cleaned-customer-modal-header">
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <GitCompare size={20} color="#2563eb" />
+            <div>
+              <h3 style={{ margin: 0 }}>Schema Change Detection & Drift Analysis</h3>
+              <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>
+                Pipeline: <strong>{pipelineName || pipelineId || "Current Dataset"}</strong> — Comparing incoming dataset against expected data contract
+              </p>
+            </div>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} title="Close">
+            <X size={18} />
+          </button>
+        </div>
+
+        {banner && (
+          <div
+            className={`contract-banner-summary ${banner.type}`}
+            style={{ margin: "12px 20px 0 20px" }}
+          >
+            {banner.type === "success" && <CheckCircle2 size={16} />}
+            {banner.type === "danger" && <XCircle size={16} />}
+            {banner.type === "warning" && <AlertTriangle size={16} />}
+            <span>{banner.text}</span>
+          </div>
+        )}
+
+        <div className="cleaned-customer-modal-content" style={{ padding: "16px 20px", overflowY: "auto", flex: 1 }}>
+          {loading && (
+            <div style={{ textAlign: "center", padding: "40px", color: "#64748b" }}>
+              <RefreshCw size={24} className="spin" style={{ marginBottom: "12px", color: "#2563eb" }} />
+              <p style={{ margin: 0, fontSize: "14px" }}>Analyzing dataset schema against pipeline contracts...</p>
+            </div>
+          )}
+
+          {!loading && schemaCheck && (
+            <>
+              {/* Overall Status Banner */}
+              <div
+                className={`contract-banner-summary ${schemaCheck.compatibility_status}`}
+                style={{ marginBottom: "16px", padding: "14px 18px", borderRadius: "8px" }}
+              >
+                {schemaCheck.compatibility_status === "compatible" && (
+                  <CheckCircle2 size={20} color="#10b981" />
+                )}
+                {schemaCheck.compatibility_status === "warning" && (
+                  <AlertTriangle size={20} color="#f59e0b" />
+                )}
+                {schemaCheck.compatibility_status === "incompatible" && (
+                  <XCircle size={20} color="#ef4444" />
+                )}
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                    <strong style={{ fontSize: "14px" }}>
+                      {schemaCheck.compatibility_status === "compatible" && "SCHEMA COMPATIBLE"}
+                      {schemaCheck.compatibility_status === "warning" && "SCHEMA DRIFT DETECTED (WARNING)"}
+                      {schemaCheck.compatibility_status === "incompatible" && "INCOMPATIBLE SCHEMA (BREAKING CHANGES)"}
+                    </strong>
+                    <span className={`contract-status-badge ${schemaCheck.compatibility_status}`}>
+                      {schemaCheck.compatibility_status.toUpperCase()}
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, fontSize: "13px" }}>{schemaCheck.summary}</p>
+                </div>
+              </div>
+
+              {/* Stats Grid */}
+              <div className="schema-stats-grid">
+                <div className="schema-stat-box">
+                  <span>Detected Columns</span>
+                  <strong>{schemaCheck.stats?.total_current_columns || 0}</strong>
+                </div>
+                <div className="schema-stat-box">
+                  <span>Expected Columns</span>
+                  <strong>{schemaCheck.stats?.total_expected_columns || 0}</strong>
+                </div>
+                <div className="schema-stat-box" style={{ borderLeft: schemaCheck.missing_columns?.length > 0 ? "3px solid #ef4444" : undefined }}>
+                  <span>Missing Columns</span>
+                  <strong style={{ color: schemaCheck.missing_columns?.length > 0 ? "#ef4444" : "#1e293b" }}>
+                    {schemaCheck.stats?.missing_count || 0}
+                  </strong>
+                </div>
+                <div className="schema-stat-box" style={{ borderLeft: schemaCheck.unexpected_columns?.length > 0 ? "3px solid #f59e0b" : undefined }}>
+                  <span>Unexpected Drift</span>
+                  <strong style={{ color: schemaCheck.unexpected_columns?.length > 0 ? "#f59e0b" : "#1e293b" }}>
+                    {schemaCheck.stats?.unexpected_count || 0}
+                  </strong>
+                </div>
+                <div className="schema-stat-box" style={{ borderLeft: schemaCheck.type_changes?.length > 0 ? "3px solid #ef4444" : undefined }}>
+                  <span>Type Mismatches</span>
+                  <strong style={{ color: schemaCheck.type_changes?.length > 0 ? "#ef4444" : "#1e293b" }}>
+                    {schemaCheck.stats?.type_change_count || 0}
+                  </strong>
+                </div>
+                <div className="schema-stat-box" style={{ borderLeft: "3px solid #10b981" }}>
+                  <span>Compatible</span>
+                  <strong style={{ color: "#10b981" }}>
+                    {schemaCheck.stats?.compatible_count || 0}
+                  </strong>
+                </div>
+              </div>
+
+              {/* Confirmation Notice when Accept New Schema is clicked */}
+              {showConfirmAccept && (
+                <div
+                  style={{
+                    background: "#eff6ff",
+                    border: "1px solid #bfdbfe",
+                    borderRadius: "8px",
+                    padding: "16px",
+                    marginBottom: "16px",
+                  }}
+                >
+                  <h4 style={{ margin: "0 0 8px 0", color: "#1e3a8a", display: "flex", alignItems: "center", gap: "8px" }}>
+                    <AlertTriangle size={18} color="#2563eb" />
+                    Confirm Contract Schema Synchronization
+                  </h4>
+                  <p style={{ margin: "0 0 12px 0", fontSize: "13px", color: "#1e40af" }}>
+                    Are you sure you want to accept this new schema? This will synchronize the PostgreSQL Data Contract rules for pipeline <strong>{pipelineName || pipelineId}</strong>:
+                  </p>
+                  <ul style={{ margin: "0 0 14px 20px", fontSize: "12px", color: "#334155" }}>
+                    <li>Add rules for unexpected columns: <strong>{schemaCheck.unexpected_columns?.map(c => c.column).join(", ") || "None"}</strong></li>
+                    <li>Update expected types for changed columns: <strong>{schemaCheck.type_changes?.map(c => `${c.column} (${c.expected_type} → ${c.detected_type})`).join(", ") || "None"}</strong></li>
+                    <li>Relax constraints on removed columns so pipeline execution is unblocked.</li>
+                  </ul>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      style={{ background: "#2563eb", borderColor: "#2563eb" }}
+                      onClick={handleConfirmAcceptSchema}
+                      disabled={isAccepting}
+                    >
+                      {isAccepting ? "Updating PostgreSQL Contracts..." : "Confirm & Update Contracts"}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => setShowConfirmAccept(false)}
+                      disabled={isAccepting}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Navigation Tabs */}
+              <div className="schema-nav-tabs">
+                <button
+                  type="button"
+                  className={`schema-nav-tab ${activeTab === "all" ? "active" : ""}`}
+                  onClick={() => setActiveTab("all")}
+                >
+                  All Differences ({totalDiffs})
+                </button>
+                <button
+                  type="button"
+                  className={`schema-nav-tab ${activeTab === "missing" ? "active" : ""}`}
+                  onClick={() => setActiveTab("missing")}
+                >
+                  Missing ({schemaCheck.missing_columns?.length || 0})
+                </button>
+                <button
+                  type="button"
+                  className={`schema-nav-tab ${activeTab === "unexpected" ? "active" : ""}`}
+                  onClick={() => setActiveTab("unexpected")}
+                >
+                  Unexpected Drift ({schemaCheck.unexpected_columns?.length || 0})
+                </button>
+                <button
+                  type="button"
+                  className={`schema-nav-tab ${activeTab === "types" ? "active" : ""}`}
+                  onClick={() => setActiveTab("types")}
+                >
+                  Type Mismatches ({schemaCheck.type_changes?.length || 0})
+                </button>
+                <button
+                  type="button"
+                  className={`schema-nav-tab ${activeTab === "compatible" ? "active" : ""}`}
+                  onClick={() => setActiveTab("compatible")}
+                >
+                  Compatible ({schemaCheck.compatible_columns?.length || 0})
+                </button>
+                <button
+                  type="button"
+                  className={`schema-nav-tab ${activeTab === "matrix" ? "active" : ""}`}
+                  onClick={() => setActiveTab("matrix")}
+                >
+                  Side-by-Side Matrix
+                </button>
+              </div>
+
+              {/* Tab Contents */}
+              {activeTab === "all" && totalDiffs === 0 && (
+                <div style={{ textAlign: "center", padding: "30px", color: "#10b981" }}>
+                  <CheckCircle2 size={36} style={{ marginBottom: "8px" }} />
+                  <p style={{ margin: 0, fontWeight: 600 }}>No schema drift or mismatches detected!</p>
+                  <p style={{ margin: "4px 0 0 0", fontSize: "12px", color: "#64748b" }}>
+                    All ingested columns match the pipeline's expected contract schema.
+                  </p>
+                </div>
+              )}
+
+              {/* Missing Columns */}
+              {(activeTab === "all" || activeTab === "missing") &&
+                schemaCheck.missing_columns?.map((m) => (
+                  <div key={m.column} className={`schema-diff-card ${m.severity}`}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                        <strong style={{ fontSize: "14px", color: "#1e293b" }}>{m.column}</strong>
+                        <span className={`contract-rule-tag ${m.is_required ? "required" : "optional"}`}>
+                          {m.is_required ? "REQUIRED MISSING" : "OPTIONAL MISSING"}
+                        </span>
+                        <span className="contract-rule-tag type">
+                          expected: {m.expected_type}
+                        </span>
+                        <span className={`contract-status-badge ${m.severity}`}>
+                          {m.severity.toUpperCase()}
+                        </span>
+                      </div>
+                      <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>{m.explanation}</p>
+                    </div>
+                  </div>
+                ))}
+
+              {/* Unexpected Columns (Drift) */}
+              {(activeTab === "all" || activeTab === "unexpected") &&
+                schemaCheck.unexpected_columns?.map((u) => (
+                  <div key={u.column} className={`schema-diff-card ${u.severity}`}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                        <strong style={{ fontSize: "14px", color: "#1e293b" }}>{u.column}</strong>
+                        <span className="contract-rule-tag range" style={{ background: "#fef3c7", color: "#92400e" }}>
+                          UNEXPECTED COLUMN (DRIFT)
+                        </span>
+                        <span className="contract-rule-tag type">
+                          detected: {u.detected_type}
+                        </span>
+                        <span className="contract-status-badge warning">
+                          WARNING
+                        </span>
+                      </div>
+                      <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>{u.explanation}</p>
+                    </div>
+                  </div>
+                ))}
+
+              {/* Type Changes */}
+              {(activeTab === "all" || activeTab === "types") &&
+                schemaCheck.type_changes?.map((t) => (
+                  <div key={t.column} className={`schema-diff-card ${t.severity}`}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                        <strong style={{ fontSize: "14px", color: "#1e293b" }}>{t.column}</strong>
+                        <span className="schema-type-compare">
+                          <span>{t.expected_type}</span>
+                          <ArrowRight size={12} color="#64748b" />
+                          <span style={{ fontWeight: 600, color: t.severity === "incompatible" ? "#ef4444" : "#f59e0b" }}>
+                            {t.detected_type}
+                          </span>
+                        </span>
+                        <span className={`contract-status-badge ${t.severity}`}>
+                          {t.severity === "incompatible" ? "BREAKING MISMATCH" : "TYPE WARNING"}
+                        </span>
+                      </div>
+                      <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>{t.explanation}</p>
+                    </div>
+                  </div>
+                ))}
+
+              {/* Compatible Columns */}
+              {activeTab === "compatible" && (
+                <div>
+                  {schemaCheck.compatible_columns?.length === 0 ? (
+                    <p style={{ color: "#64748b", textAlign: "center", padding: "20px" }}>No compatible columns found.</p>
+                  ) : (
+                    schemaCheck.compatible_columns?.map((c) => (
+                      <div key={c.column} className="schema-diff-card compatible">
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <CheckCircle2 size={16} color="#10b981" />
+                          <strong style={{ fontSize: "14px" }}>{c.column}</strong>
+                          <span className="contract-rule-tag type">{c.type}</span>
+                          <span className="contract-status-badge success">MATCHED</span>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+
+              {/* Side-by-Side Matrix */}
+              {activeTab === "matrix" && (
+                <div style={{ overflowX: "auto" }}>
+                  <table className="pipeline-table" style={{ width: "100%", fontSize: "12px" }}>
+                    <thead>
+                      <tr>
+                        <th>Column Name</th>
+                        <th>Incoming Data Type</th>
+                        <th>Expected Type</th>
+                        <th>Required?</th>
+                        <th>Compatibility</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {/* Expected columns */}
+                      {schemaCheck.expected_schema?.map((exp) => {
+                        const isMissing = schemaCheck.missing_columns?.some((m) => m.column === exp.name);
+                        const typeChange = schemaCheck.type_changes?.find((t) => t.column === exp.name);
+                        const currCol = schemaCheck.current_schema?.find((c) => c.name === exp.name);
+
+                        let statusBadge = (
+                          <span className="contract-status-badge success">COMPATIBLE</span>
+                        );
+                        if (isMissing) {
+                          statusBadge = (
+                            <span className={`contract-status-badge ${exp.is_required ? "incompatible" : "warning"}`}>
+                              {exp.is_required ? "MISSING (REQUIRED)" : "MISSING (OPTIONAL)"}
+                            </span>
+                          );
+                        } else if (typeChange) {
+                          statusBadge = (
+                            <span className={`contract-status-badge ${typeChange.severity}`}>
+                              {typeChange.severity === "incompatible" ? "BREAKING TYPE" : "TYPE WARNING"}
+                            </span>
+                          );
+                        }
+
+                        return (
+                          <tr key={`exp_${exp.name}`}>
+                            <td><strong>{exp.name}</strong></td>
+                            <td>{currCol ? currCol.type : <span style={{ color: "#ef4444" }}>— (Not Present)</span>}</td>
+                            <td>{exp.expected_type}</td>
+                            <td>
+                              <span className={`contract-rule-tag ${exp.is_required ? "required" : "optional"}`}>
+                                {exp.is_required ? "Yes" : "No"}
+                              </span>
+                            </td>
+                            <td>{statusBadge}</td>
+                          </tr>
+                        );
+                      })}
+
+                      {/* Unexpected columns */}
+                      {schemaCheck.unexpected_columns?.map((unexp) => (
+                        <tr key={`unexp_${unexp.column}`} style={{ background: "#fffdfa" }}>
+                          <td><strong>{unexp.column}</strong></td>
+                          <td>{unexp.detected_type}</td>
+                          <td><span style={{ color: "#64748b" }}>— (Not Expected)</span></td>
+                          <td><span className="contract-rule-tag optional">No</span></td>
+                          <td>
+                            <span className="contract-status-badge warning">UNEXPECTED (DRIFT)</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Modal Footer Controls */}
+        <div className="cleaned-customer-modal-footer" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button
+              type="button"
+              className="secondary-button"
+              style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+              onClick={fetchSchemaCheck}
+              disabled={loading}
+              title="Re-run schema comparison against current dataset"
+            >
+              <RefreshCw size={14} className={loading ? "spin" : ""} /> Compare Schema
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+              onClick={handleDownloadDiffReport}
+              disabled={loading || !schemaCheck}
+              title="Download full schema diff report as JSON"
+            >
+              <Download size={14} /> Export Diff
+            </button>
+          </div>
+
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={onClose}
+              title="Keep existing data contract rules without changes"
+            >
+              Keep Existing Schema
+            </button>
+
+            {onOpenContractValidation && (
+              <button
+                type="button"
+                className="secondary-button"
+                style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+                onClick={() => {
+                  onClose();
+                  onOpenContractValidation();
+                }}
+                title="Run full data contract validation on dataset"
+              >
+                <Check size={14} /> Run Validation
+              </button>
+            )}
+
+            <button
+              type="button"
+              className="primary-button"
+              style={{
+                background: "#2563eb",
+                borderColor: "#2563eb",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+              }}
+              onClick={() => setShowConfirmAccept(true)}
+              disabled={
+                loading ||
+                isAccepting ||
+                !pipelineId ||
+                (!schemaCheck?.unexpected_columns?.length &&
+                  !schemaCheck?.missing_columns?.length &&
+                  !schemaCheck?.type_changes?.length)
+              }
+              title={
+                !pipelineId
+                  ? "Save pipeline first to synchronize PostgreSQL contracts"
+                  : "Accept incoming schema and synchronize contract rules in PostgreSQL"
+              }
+            >
+              <GitCompare size={14} /> Accept New Schema
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/* =========================================================
    PIPELINE WORKBENCH PAGE (STAGE 2)
 ========================================================= */
 
@@ -3716,6 +4316,9 @@ function PipelineWorkbenchPage({
   const [contractModalOpen, setContractModalOpen] = useState(false);
   const [contractRules, setContractRules] = useState([]);
   const [contractValidation, setContractValidation] = useState(null);
+
+  // STAGE 9: Schema Change Detection Modal State
+  const [schemaModalOpen, setSchemaModalOpen] = useState(false);
 
   const loadContractRules = async (pId) => {
     if (!pId) return;
@@ -4607,6 +5210,14 @@ function PipelineWorkbenchPage({
             >
               <FileCheck2 size={15} /> Validate Input (Data Contract)
             </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => setSchemaModalOpen(true)}
+              title="Compare incoming schema against expected contract schema and detect drift"
+            >
+              <GitCompare size={15} /> Schema Check
+            </button>
           </div>
 
           <div className="pipeline-actions-right">
@@ -4655,6 +5266,15 @@ function PipelineWorkbenchPage({
             </p>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <button
+              type="button"
+              className="secondary-button"
+              style={{ fontSize: "12px", padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: "5px" }}
+              onClick={() => setSchemaModalOpen(true)}
+              title="Detect schema drift and check compatibility"
+            >
+              <GitCompare size={13} /> Schema Check
+            </button>
             <button
               type="button"
               className="secondary-button"
@@ -4867,6 +5487,24 @@ function PipelineWorkbenchPage({
         }}
         onContinueExecution={() => {
           handleExecuteWorkflow();
+        }}
+      />
+
+      {/* SCHEMA CHANGE DETECTION MODAL (STAGE 9 - FEATURE 8) */}
+      <SchemaCheckModal
+        isOpen={schemaModalOpen}
+        onClose={() => setSchemaModalOpen(false)}
+        pipelineId={pipelineId}
+        pipelineName={name}
+        records={result?.records}
+        contractRules={contractRules}
+        onSchemaAccepted={(updatedContracts) => {
+          if (pipelineId) {
+            loadContractRules(pipelineId);
+          }
+        }}
+        onOpenContractValidation={() => {
+          setContractModalOpen(true);
         }}
       />
     </div>

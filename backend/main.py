@@ -14,7 +14,9 @@ from pydantic import BaseModel
 
 from backend.data_quality import analyze_data
 from backend.data_contracts import validate_data_contract
+from backend.schema_detection import detect_schema_changes
 from backend.database import (
+    accept_pipeline_schema,
     check_connection,
     create_data_contract,
     create_pipeline_run,
@@ -90,6 +92,17 @@ class ContractValidationPayload(BaseModel):
     rules: Optional[List[Dict[str, Any]]] = None
     records: Optional[List[Dict[str, Any]]] = None
     error_policy: Optional[str] = "stop_on_error"
+
+
+class SchemaCheckPayload(BaseModel):
+    records: Optional[List[Dict[str, Any]]] = None
+    expected_columns: Optional[List[Dict[str, Any]]] = None
+    contract_rules: Optional[List[Dict[str, Any]]] = None
+
+
+class AcceptSchemaPayload(BaseModel):
+    new_schema: Optional[List[Dict[str, Any]]] = None
+    records: Optional[List[Dict[str, Any]]] = None
 
 
 class StepPreviewPayload(BaseModel):
@@ -876,6 +889,105 @@ def validate_standalone_contract(payload: ContractValidationPayload):
         return {"status": "success", "validation": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Contract validation failed: {e}")
+
+
+# ==========================================
+# SCHEMA CHANGE DETECTION ENDPOINTS (STAGE 9 - FEATURE 8)
+# ==========================================
+
+@app.post("/pipelines/{pipeline_id}/schema-check")
+def check_pipeline_schema_changes(pipeline_id: str, payload: Optional[SchemaCheckPayload] = None):
+    """
+    Compare current input dataset schema with pipeline's expected schema and contract rules.
+    Detects missing columns, unexpected columns, type changes, and required violations.
+    """
+    try:
+        p = get_pipeline(pipeline_id)
+        records = payload.records if payload else None
+        df = _get_base_dataframe(records)
+
+        if not p:
+            contract_rules = payload.contract_rules if payload and payload.contract_rules is not None else []
+            expected_cols = payload.expected_columns if payload else None
+            changes = detect_schema_changes(
+                current_df=df,
+                expected_columns=expected_cols,
+                contract_rules=contract_rules,
+                pipeline=None,
+            )
+            return {
+                "status": "success",
+                "pipeline_id": pipeline_id,
+                "pipeline_name": "Current Workbench Dataset",
+                "schema_check": changes,
+            }
+
+        contract_rules = payload.contract_rules if payload and payload.contract_rules is not None else list_data_contracts(pipeline_id)
+        expected_cols = payload.expected_columns if payload else None
+
+        changes = detect_schema_changes(
+            current_df=df,
+            expected_columns=expected_cols,
+            contract_rules=contract_rules,
+            pipeline=p,
+        )
+        return {
+            "status": "success",
+            "pipeline_id": pipeline_id,
+            "pipeline_name": p.get("name"),
+            "schema_check": changes,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Schema change detection failed: {e}")
+
+
+@app.post("/schema/detect-changes")
+def detect_schema_changes_standalone(payload: SchemaCheckPayload):
+    """
+    Standalone schema change detection between provided records and expected schema/contracts.
+    """
+    try:
+        df = _get_base_dataframe(payload.records)
+        changes = detect_schema_changes(
+            current_df=df,
+            expected_columns=payload.expected_columns,
+            contract_rules=payload.contract_rules,
+        )
+        return {"status": "success", "schema_check": changes}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Standalone schema check failed: {e}")
+
+
+@app.post("/pipelines/{pipeline_id}/accept-schema")
+def accept_new_pipeline_schema(pipeline_id: str, payload: Optional[AcceptSchemaPayload] = None):
+    """
+    Accept new schema for a pipeline by synchronizing PostgreSQL data_contracts with new columns and types.
+    Requires explicit user confirmation on the frontend.
+    """
+    try:
+        p = get_pipeline(pipeline_id)
+        if not p:
+            raise HTTPException(status_code=404, detail=f"Pipeline '{pipeline_id}' not found.")
+
+        new_schema = payload.new_schema if payload and payload.new_schema else None
+        if not new_schema:
+            df = _get_base_dataframe(payload.records if payload else None)
+            changes = detect_schema_changes(df, contract_rules=list_data_contracts(pipeline_id))
+            new_schema = changes.get("current_schema", [])
+
+        updated_contracts = accept_pipeline_schema(pipeline_id, new_schema)
+        return {
+            "status": "success",
+            "message": f"Successfully accepted new schema for pipeline '{p.get('name')}'. Updated {len(updated_contracts)} contract rules.",
+            "pipeline_id": pipeline_id,
+            "updated_contracts": updated_contracts,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to accept new schema: {e}")
 
 
 @app.post("/pipelines/validate")

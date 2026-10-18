@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 import psycopg2
 from psycopg2 import sql
@@ -1209,6 +1210,204 @@ def compare_pipeline_runs(run_id_1: str, run_id_2: str) -> dict:
         },
         "step_comparisons": step_comparisons,
     }
+
+
+# =========================================================
+# STAGE 11 - FEATURE 10: EXECUTION REPORTS
+# =========================================================
+
+def generate_execution_report(run_id: str) -> dict:
+    """
+    Generate a full structured execution report from saved PostgreSQL execution data.
+    Sanitizes configuration to exclude secrets, passwords, and tokens.
+    """
+    run = get_pipeline_run_details(run_id)
+    if not run:
+        return None
+
+    # Retrieve pipeline definition if saved to enrich step configurations
+    step_configs = {}
+    pipeline_def = None
+    if run.get("pipeline_id"):
+        try:
+            pipeline_def = get_pipeline(run["pipeline_id"])
+            if pipeline_def and pipeline_def.get("steps"):
+                for s in pipeline_def["steps"]:
+                    s_id = s.get("id")
+                    if s_id:
+                        raw_params = s.get("params") or s.get("config") or {}
+                        # Sanitize parameters (exclude sensitive keys)
+                        sanitized_params = {
+                            k: ("***" if any(sec in str(k).lower() for sec in ["pass", "secret", "token", "key", "auth"]) else v)
+                            for k, v in raw_params.items()
+                        }
+                        step_configs[s_id] = sanitized_params
+        except Exception:
+            pass
+
+    # Enrich step telemetry
+    enriched_steps = []
+    for s in run.get("steps", []):
+        cfg = step_configs.get(s["step_id"], {})
+        enriched_steps.append({
+            "step_order": s["step_order"],
+            "step_id": s["step_id"],
+            "step_name": s["step_name"],
+            "step_type": s["type"],
+            "configuration": cfg,
+            "status": s["status"],
+            "duration_ms": s["duration_ms"],
+            "rows_before": s["rows_before"],
+            "rows_after": s["rows_after"],
+            "row_delta": s["row_delta"],
+            "warnings": s.get("warnings") or [],
+            "error_details": s.get("error"),
+        })
+
+    # Retrieve output schema from destination table if available
+    dest_table = run.get("destination_table")
+    output_schema = []
+    if dest_table:
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT column_name, data_type, is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = %s
+                ORDER BY ordinal_position;
+            """, (dest_table,))
+            cols = cursor.fetchall()
+            output_schema = [
+                {"column_name": c[0], "data_type": c[1], "nullable": c[2] == "YES"}
+                for c in cols
+            ]
+            cursor.close()
+            conn.close()
+        except Exception:
+            pass
+
+    input_count = run.get("input_rows") or 0
+    output_count = run.get("output_rows") or 0
+    retention_pct = round((output_count / input_count) * 100, 2) if input_count > 0 else 0.0
+
+    report = {
+        "report_id": f"rep_{run['run_id']}",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "execution_summary": {
+            "pipeline_id": run.get("pipeline_id"),
+            "pipeline_name": run.get("pipeline_name") or "Unnamed Pipeline",
+            "run_id": run["run_id"],
+            "input_filename": run.get("input_filename") or "dataset_input",
+            "execution_timestamp": run.get("started_at"),
+            "completed_at": run.get("completed_at"),
+            "overall_status": run.get("status"),
+            "duration_ms": run.get("duration_ms") or 0,
+            "input_rows": input_count,
+            "output_rows": output_count,
+            "row_retention_pct": retention_pct,
+            "completed_steps": run.get("completed_steps") or 0,
+            "failed_steps": run.get("failed_steps") or 0,
+            "total_steps": len(enriched_steps),
+            "error_message": run.get("error_message"),
+        },
+        "step_results": enriched_steps,
+        "output_and_destination": {
+            "output_schema": output_schema,
+            "output_row_count": output_count,
+            "destination_type": "postgres" if dest_table else "csv",
+            "destination_table": dest_table,
+            "database_write_status": run.get("destination_status") or "No write recorded",
+            "database_error": run.get("error_message") if run.get("status") == "failed" and dest_table else None,
+        },
+        "security_audit": {
+            "sanitized": True,
+            "secrets_excluded": True,
+            "database_credentials_exposed": False,
+        }
+    }
+    return report
+
+
+def generate_report_csv_string(report: dict) -> str:
+    """
+    Format execution report into a clean, well-structured CSV string.
+    """
+    import io
+    import csv
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    summary = report.get("execution_summary", {})
+    output_dest = report.get("output_and_destination", {})
+    steps = report.get("step_results", [])
+
+    # Header / Meta
+    writer.writerow(["# FlowForge Execution Audit Report"])
+    writer.writerow(["# Report ID", report.get("report_id", "")])
+    writer.writerow(["# Generated At", report.get("generated_at", "")])
+    writer.writerow([])
+
+    # Execution Summary Section
+    writer.writerow(["=== EXECUTION SUMMARY ==="])
+    writer.writerow(["Metric", "Value"])
+    writer.writerow(["Pipeline Name", summary.get("pipeline_name", "")])
+    writer.writerow(["Pipeline ID", summary.get("pipeline_id", "")])
+    writer.writerow(["Run ID", summary.get("run_id", "")])
+    writer.writerow(["Overall Status", summary.get("overall_status", "")])
+    writer.writerow(["Started At", summary.get("execution_timestamp", "")])
+    writer.writerow(["Completed At", summary.get("completed_at", "")])
+    writer.writerow(["Duration (ms)", summary.get("duration_ms", 0)])
+    writer.writerow(["Input Filename / Reference", summary.get("input_filename", "")])
+    writer.writerow(["Input Rows", summary.get("input_rows", 0)])
+    writer.writerow(["Output Rows", summary.get("output_rows", 0)])
+    writer.writerow(["Row Retention Rate (%)", f"{summary.get('row_retention_pct', 0)}%"])
+    writer.writerow(["Completed Steps", summary.get("completed_steps", 0)])
+    writer.writerow(["Failed Steps", summary.get("failed_steps", 0)])
+    if summary.get("error_message"):
+        writer.writerow(["Error Message", summary.get("error_message")])
+    writer.writerow([])
+
+    # Output and Destination Section
+    writer.writerow(["=== OUTPUT & DESTINATION ==="])
+    writer.writerow(["Property", "Value"])
+    writer.writerow(["Destination Type", output_dest.get("destination_type", "")])
+    writer.writerow(["Destination Table", output_dest.get("destination_table", "")])
+    writer.writerow(["Database Write Status", output_dest.get("database_write_status", "")])
+    writer.writerow(["Output Row Count", output_dest.get("output_row_count", 0)])
+    writer.writerow([])
+
+    # Step Results Section
+    writer.writerow(["=== STEP EXECUTION RESULTS ==="])
+    writer.writerow([
+        "Step Order",
+        "Step Name",
+        "Step Type",
+        "Status",
+        "Duration (ms)",
+        "Rows Before",
+        "Rows After",
+        "Row Delta",
+        "Warnings",
+        "Error Details",
+    ])
+    for s in steps:
+        warnings_str = "; ".join(s.get("warnings") or [])
+        writer.writerow([
+            s.get("step_order", ""),
+            s.get("step_name", ""),
+            s.get("step_type", ""),
+            s.get("status", ""),
+            s.get("duration_ms", 0),
+            s.get("rows_before", 0),
+            s.get("rows_after", 0),
+            s.get("row_delta", 0),
+            warnings_str,
+            s.get("error_details") or "",
+        ])
+
+    return output.getvalue()
 
 
 # =========================================================

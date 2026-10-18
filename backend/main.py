@@ -8,7 +8,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from psycopg2 import sql
 from pydantic import BaseModel
 
@@ -26,6 +26,8 @@ from backend.database import (
     delete_pipeline_run,
     duplicate_pipeline,
     finish_pipeline_run,
+    generate_execution_report,
+    generate_report_csv_string,
     get_connection,
     get_data_contract,
     get_pipeline,
@@ -743,6 +745,104 @@ def delete_run_endpoint(run_id: str):
         raise HTTPException(status_code=404, detail="Execution run not found.")
     return {"status": "success", "message": f"Run '{run_id}' deleted."}
 
+
+# =========================================================
+# STAGE 11 - FEATURE 10: EXECUTION REPORTS ENDPOINTS
+# =========================================================
+
+@app.get("/pipelines/reports")
+def get_execution_reports(
+    pipeline_id: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    sort: Optional[str] = "desc",
+    limit: int = 100,
+):
+    """Retrieve execution reports list from PostgreSQL execution history."""
+    try:
+        runs = list_pipeline_runs(
+            pipeline_id=pipeline_id,
+            status=status,
+            search=search,
+            date_from=date_from,
+            date_to=date_to,
+            sort=sort or "desc",
+            limit=limit,
+        )
+        reports = []
+        for r in runs:
+            in_rows = r.get("input_rows") or 0
+            out_rows = r.get("output_rows") or 0
+            retention = round((out_rows / in_rows) * 100, 2) if in_rows > 0 else 0.0
+            reports.append({
+                "report_id": f"rep_{r['run_id']}",
+                "run_id": r["run_id"],
+                "pipeline_id": r.get("pipeline_id"),
+                "pipeline_name": r.get("pipeline_name"),
+                "status": r.get("status"),
+                "started_at": r.get("started_at"),
+                "completed_at": r.get("completed_at"),
+                "duration_ms": r.get("duration_ms"),
+                "input_filename": r.get("input_filename") or "dataset_input",
+                "input_rows": in_rows,
+                "output_rows": out_rows,
+                "row_retention_pct": retention,
+                "completed_steps": r.get("completed_steps") or 0,
+                "failed_steps": r.get("failed_steps") or 0,
+                "destination_table": r.get("destination_table"),
+                "destination_status": r.get("destination_status"),
+                "error_message": r.get("error_message"),
+            })
+        return {"status": "success", "reports": reports, "count": len(reports)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load reports: {e}")
+
+
+@app.get("/pipelines/runs/{run_id}/report")
+def get_single_run_report(run_id: str):
+    """Retrieve full structured execution report for a run."""
+    report = generate_execution_report(run_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Execution report not found.")
+    return {"status": "success", "report": report}
+
+
+@app.get("/pipelines/runs/{run_id}/report/json")
+@app.get("/pipelines/runs/{run_id}/report/export/json")
+def export_run_report_json(run_id: str):
+    """Download the complete execution report as formatted JSON file."""
+    report = generate_execution_report(run_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Execution report not found.")
+
+    json_str = json.dumps(report, indent=2, default=str)
+    return Response(
+        content=json_str,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f"attachment; filename=flowforge_report_{run_id}.json"
+        },
+    )
+
+
+@app.get("/pipelines/runs/{run_id}/report/csv")
+@app.get("/pipelines/runs/{run_id}/report/export/csv")
+def export_run_report_csv(run_id: str):
+    """Download the complete execution report as structured CSV file."""
+    report = generate_execution_report(run_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Execution report not found.")
+
+    csv_str = generate_report_csv_string(report)
+    return Response(
+        content=csv_str,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename=flowforge_report_{run_id}.csv"
+        },
+    )
 
 
 @app.get("/pipelines/{pipeline_id}")

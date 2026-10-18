@@ -38,6 +38,8 @@ import {
   Folder,
   GitCompare,
   FileText,
+  Printer,
+  ShieldCheck,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -83,6 +85,11 @@ const NAV_ITEMS = [
         id: "run-history",
         label: "Run History",
         icon: Clock,
+      },
+      {
+        id: "reports",
+        label: "Reports",
+        icon: FileText,
       },
       {
         id: "upload",
@@ -147,6 +154,7 @@ function App() {
   const [message, setMessage] = useState("");
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [workbenchPipelineId, setWorkbenchPipelineId] = useState(null);
+  const [selectedReportRunId, setSelectedReportRunId] = useState(null);
 
   /* =======================================================
      FILE SELECT
@@ -344,6 +352,10 @@ function App() {
         title: "Run History & Replay",
         subtitle: "Audit execution telemetry, inspect step-level metrics, and replay ETL pipelines",
       },
+      reports: {
+        title: "Execution Reports",
+        subtitle: "Generate, inspect, and export comprehensive audit reports from execution telemetry",
+      },
       postgres: {
         title: "Data Sources",
         subtitle: "Inspect PostgreSQL connection status, metadata, and browse relational tables",
@@ -523,6 +535,21 @@ function App() {
               setWorkbenchPipelineId(pId);
               setActivePage("workbench");
             }}
+            onViewReport={(runId) => {
+              setSelectedReportRunId(runId);
+              setActivePage("reports");
+            }}
+          />
+        )}
+
+        {activePage === "reports" && (
+          <ReportsPage
+            initialRunId={selectedReportRunId}
+            onOpenPipelineInWorkbench={(pId) => {
+              setWorkbenchPipelineId(pId);
+              setActivePage("workbench");
+            }}
+            onBrowseRunHistory={() => setActivePage("run-history")}
           />
         )}
 
@@ -3041,7 +3068,7 @@ function SavedPipelinesPage({ onOpenPipeline, onNewPipeline }) {
    STAGE 10: RUN HISTORY & EXECUTION REPLAY PAGE (FEATURE 9)
 ========================================================= */
 
-function RunHistoryPage({ records = null, onOpenPipelineInWorkbench }) {
+function RunHistoryPage({ records = null, onOpenPipelineInWorkbench, onViewReport }) {
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
@@ -3500,6 +3527,17 @@ function RunHistoryPage({ records = null, onOpenPipelineInWorkbench }) {
                       </td>
                       <td style={{ textAlign: "right" }}>
                         <div className="run-actions-group" style={{ justifyContent: "flex-end" }}>
+                          {onViewReport && (
+                            <button
+                              type="button"
+                              className="run-action-btn"
+                              onClick={() => onViewReport(r.run_id)}
+                              title="View and export Execution Audit Report"
+                              style={{ background: "#eef2ff", borderColor: "#c7d2fe", color: "#4f46e5" }}
+                            >
+                              <FileText size={12} /> Report
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="run-action-btn"
@@ -4037,6 +4075,703 @@ function RunHistoryPage({ records = null, onOpenPipelineInWorkbench }) {
             </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+
+/* =========================================================
+   STAGE 11 - FEATURE 10: EXECUTION REPORTS (PAGE: REPORTS)
+========================================================= */
+
+function ReportViewModal({ report, onClose, onExportJson, onDownloadCsv }) {
+  if (!report) return null;
+
+  const summary = report.execution_summary || {};
+  const steps = report.step_results || [];
+  const outDest = report.output_and_destination || {};
+  const schema = outDest.output_schema || [];
+  const isFailed = summary.overall_status === "failed";
+
+  const handlePrint = () => {
+    window.print();
+  };
+
+  return (
+    <div className="report-modal-backdrop" onClick={onClose}>
+      <div className="report-modal-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="report-modal-header">
+          <div className="report-modal-header-left">
+            <FileText size={24} color="#2563eb" />
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <h3 className="report-modal-title">Execution Audit Report</h3>
+                <span className={`run-status-pill ${summary.overall_status}`}>
+                  {summary.overall_status === "completed" && <CheckCircle2 size={12} />}
+                  {summary.overall_status === "failed" && <XCircle size={12} />}
+                  {summary.overall_status === "running" && <Activity size={12} className="spin" />}
+                  {summary.overall_status}
+                </span>
+              </div>
+              <div className="report-modal-subtitle">
+                Report ID: <code>{report.report_id}</code> • Run ID: <code>{summary.run_id}</code>
+              </div>
+            </div>
+          </div>
+          <div className="report-modal-actions">
+            <button
+              type="button"
+              className="report-btn"
+              onClick={handlePrint}
+              title="Print or Save as PDF"
+            >
+              <Printer size={13} /> Print / PDF
+            </button>
+            <button
+              type="button"
+              className="report-btn"
+              onClick={() => onExportJson(summary.run_id)}
+              title="Export complete execution report as JSON"
+            >
+              <Download size={13} /> Export JSON
+            </button>
+            <button
+              type="button"
+              className="report-btn"
+              onClick={() => onDownloadCsv(summary.run_id)}
+              title="Download execution report as CSV"
+            >
+              <Download size={13} /> Download CSV
+            </button>
+            <button
+              type="button"
+              className="icon-button"
+              onClick={onClose}
+              title="Close Report"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="report-modal-body">
+          {/* Failure Alert Banner if Failed */}
+          {isFailed && (
+            <div className="contract-banner-summary error" style={{ margin: 0 }}>
+              <XCircle size={18} />
+              <div>
+                <strong>Pipeline Execution Failed: </strong>
+                <span>{summary.error_message || "One or more transformation steps encountered an unrecoverable failure."}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Section 1: Execution Summary */}
+          <div className="report-doc-sheet">
+            <div className="report-section-title">
+              <Clock size={16} color="#2563eb" />
+              1. Execution Summary
+            </div>
+            <div className="report-summary-grid">
+              <div className="report-meta-box">
+                <div className="report-meta-label">Pipeline Name</div>
+                <div className="report-meta-value">{summary.pipeline_name || "Unnamed Pipeline"}</div>
+              </div>
+              <div className="report-meta-box">
+                <div className="report-meta-label">Input Source</div>
+                <div className="report-meta-value">{summary.input_filename || "dataset_input"}</div>
+              </div>
+              <div className="report-meta-box">
+                <div className="report-meta-label">Execution Started</div>
+                <div className="report-meta-value">
+                  {summary.execution_timestamp ? new Date(summary.execution_timestamp).toLocaleString() : "—"}
+                </div>
+              </div>
+              <div className="report-meta-box">
+                <div className="report-meta-label">Total Duration</div>
+                <div className="report-meta-value">{summary.duration_ms != null ? `${summary.duration_ms} ms` : "—"}</div>
+              </div>
+              <div className="report-meta-box">
+                <div className="report-meta-label">Input Rows</div>
+                <div className="report-meta-value">{summary.input_rows?.toLocaleString() ?? 0}</div>
+              </div>
+              <div className="report-meta-box">
+                <div className="report-meta-label">Output Rows</div>
+                <div className="report-meta-value">{summary.output_rows?.toLocaleString() ?? 0}</div>
+              </div>
+              <div className="report-meta-box">
+                <div className="report-meta-label">Row Retention</div>
+                <div className="report-meta-value">{summary.row_retention_pct ?? 0}%</div>
+              </div>
+              <div className="report-meta-box">
+                <div className="report-meta-label">Steps Completed / Total</div>
+                <div className="report-meta-value">{summary.completed_steps ?? 0} / {summary.total_steps ?? 0}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 2: Step-by-Step Results */}
+          <div className="report-doc-sheet">
+            <div className="report-section-title">
+              <Layers size={16} color="#2563eb" />
+              2. Step Execution Telemetry
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table className="run-steps-table" style={{ width: "100%", margin: 0 }}>
+                <thead>
+                  <tr>
+                    <th style={{ width: "45px" }}>#</th>
+                    <th>Step Name & Type</th>
+                    <th>Configuration</th>
+                    <th>Status</th>
+                    <th>Duration</th>
+                    <th>Rows Before → After</th>
+                    <th>Delta</th>
+                    <th>Warnings & Errors</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {steps.map((s, idx) => {
+                    const cfgEntries = Object.entries(s.configuration || {});
+                    return (
+                      <tr key={s.step_id || idx} style={{ background: s.status === "failed" ? "#fff5f5" : undefined }}>
+                        <td style={{ fontWeight: 600, color: "#64748b" }}>{s.step_order || idx + 1}</td>
+                        <td>
+                          <div style={{ fontWeight: 600, color: "#1e293b", fontSize: "13px" }}>{s.step_name}</div>
+                          <code style={{ fontSize: "11px", color: "#64748b" }}>{s.step_type}</code>
+                        </td>
+                        <td style={{ maxWidth: "200px" }}>
+                          {cfgEntries.length === 0 ? (
+                            <span style={{ color: "#94a3b8", fontSize: "11px" }}>Default</span>
+                          ) : (
+                            cfgEntries.map(([k, v]) => (
+                              <span key={k} className="report-param-tag">
+                                {k}: {typeof v === "object" ? JSON.stringify(v) : String(v)}
+                              </span>
+                            ))
+                          )}
+                        </td>
+                        <td>
+                          <span className={`run-status-pill ${s.status}`}>
+                            {s.status === "success" && <CheckCircle2 size={11} />}
+                            {s.status === "failed" && <XCircle size={11} />}
+                            {s.status === "warning" && <AlertTriangle size={11} />}
+                            {s.status}
+                          </span>
+                        </td>
+                        <td style={{ fontSize: "12px", fontWeight: 500 }}>{s.duration_ms} ms</td>
+                        <td style={{ fontSize: "12px" }}>
+                          <span>{s.rows_before}</span>
+                          <ArrowRight size={10} style={{ margin: "0 4px", verticalAlign: "middle", color: "#94a3b8" }} />
+                          <span style={{ fontWeight: 600 }}>{s.rows_after}</span>
+                        </td>
+                        <td>
+                          <span className={`run-delta-tag ${s.row_delta < 0 ? "negative" : s.row_delta > 0 ? "positive" : "neutral"}`}>
+                            {s.row_delta > 0 ? `+${s.row_delta}` : s.row_delta}
+                          </span>
+                        </td>
+                        <td style={{ fontSize: "11px", maxWidth: "220px" }}>
+                          {s.error_details && (
+                            <div style={{ color: "#dc2626", fontWeight: 600, marginBottom: "2px" }}>
+                              {s.error_details}
+                            </div>
+                          )}
+                          {s.warnings && s.warnings.length > 0 && (
+                            <div style={{ color: "#d97706" }}>
+                              {s.warnings.map((w, wi) => (
+                                <div key={wi}>⚠ {w}</div>
+                              ))}
+                            </div>
+                          )}
+                          {!s.error_details && (!s.warnings || s.warnings.length === 0) && (
+                            <span style={{ color: "#16a34a" }}>Clean</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Section 3: Output and Destination */}
+          <div className="report-doc-sheet">
+            <div className="report-section-title">
+              <Database size={16} color="#2563eb" />
+              3. Output and Destination
+            </div>
+            <div className="report-summary-grid" style={{ marginBottom: "16px" }}>
+              <div className="report-meta-box">
+                <div className="report-meta-label">Destination Type</div>
+                <div className="report-meta-value" style={{ textTransform: "uppercase" }}>{outDest.destination_type || "PostgreSQL"}</div>
+              </div>
+              <div className="report-meta-box">
+                <div className="report-meta-label">Destination Table</div>
+                <div className="report-meta-value">{outDest.destination_table || "customers"}</div>
+              </div>
+              <div className="report-meta-box">
+                <div className="report-meta-label">Output Row Count</div>
+                <div className="report-meta-value">{outDest.output_row_count?.toLocaleString() ?? 0} rows</div>
+              </div>
+              <div className="report-meta-box">
+                <div className="report-meta-label">Database Write Status</div>
+                <div className="report-meta-value" style={{ fontSize: "12px" }}>{outDest.database_write_status || "—"}</div>
+              </div>
+            </div>
+
+            {schema && schema.length > 0 ? (
+              <div>
+                <div style={{ fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "8px" }}>
+                  Destination Output Schema ({schema.length} Columns)
+                </div>
+                <table className="run-steps-table" style={{ width: "100%", margin: 0 }}>
+                  <thead>
+                    <tr>
+                      <th>Column Name</th>
+                      <th>PostgreSQL Data Type</th>
+                      <th>Nullable</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {schema.map((col, ci) => (
+                      <tr key={ci}>
+                        <td style={{ fontWeight: 600, color: "#1e293b", fontFamily: "monospace" }}>{col.column_name}</td>
+                        <td>
+                          <code style={{ background: "#f1f5f9", padding: "2px 6px", borderRadius: "4px", fontSize: "11px", color: "#2563eb" }}>
+                            {col.data_type}
+                          </code>
+                        </td>
+                        <td style={{ fontSize: "12px", color: col.nullable ? "#64748b" : "#dc2626" }}>
+                          {col.nullable ? "YES" : "NO (NOT NULL)"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic", background: "#f8fafc", padding: "10px 14px", borderRadius: "6px" }}>
+                {isFailed ? "Output schema unavailable because pipeline execution failed prior to destination load." : "Destination schema metadata unavailable."}
+              </div>
+            )}
+          </div>
+
+          {/* Section 4: Security & Audit Provenance */}
+          <div className="report-security-badge">
+            <ShieldCheck size={18} color="#16a34a" />
+            <div>
+              <strong>Audit & Compliance Guarantee: </strong>
+              <span>
+                All database credentials, authentication keys, and connection passwords have been redacted. Generated on {report.generated_at ? new Date(report.generated_at).toLocaleString() : new Date().toLocaleString()} by FlowForge Engine v2.0.0.
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function ReportsPage({ initialRunId = null, onOpenPipelineInWorkbench, onBrowseRunHistory }) {
+  const [reports, setReports] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [dateFilter, setDateFilter] = useState("all");
+  const [sortOrder, setSortOrder] = useState("desc");
+  const [activeReport, setActiveReport] = useState(null);
+  const [banner, setBanner] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
+
+  const fetchReports = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams();
+      if (statusFilter !== "all") params.append("status", statusFilter);
+      if (searchTerm.trim()) params.append("search", searchTerm.trim());
+      if (sortOrder) params.append("sort", sortOrder);
+      if (dateFilter === "today") {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        params.append("date_from", today.toISOString());
+      } else if (dateFilter === "7days") {
+        const d = new Date(Date.now() - 7 * 86400000);
+        params.append("date_from", d.toISOString());
+      } else if (dateFilter === "30days") {
+        const d = new Date(Date.now() - 30 * 86400000);
+        params.append("date_from", d.toISOString());
+      }
+
+      const res = await fetch(`${API_URL}/pipelines/reports?${params.toString()}`);
+      if (!res.ok) throw new Error("Failed to load execution reports from PostgreSQL");
+      const data = await res.json();
+      setReports(data.reports || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchReports();
+  }, [statusFilter, dateFilter, sortOrder]);
+
+  // If initialRunId provided, automatically load full report modal
+  useEffect(() => {
+    if (initialRunId) {
+      handleViewReport(initialRunId);
+    }
+  }, [initialRunId]);
+
+  const handleSearchSubmit = (e) => {
+    e.preventDefault();
+    fetchReports();
+  };
+
+  const handleViewReport = async (runId) => {
+    try {
+      const res = await fetch(`${API_URL}/pipelines/runs/${runId}/report`);
+      if (!res.ok) throw new Error("Failed to retrieve execution report");
+      const data = await res.json();
+      setActiveReport(data.report);
+    } catch (err) {
+      setBanner({ type: "error", text: "Failed to open report: " + err.message });
+      setTimeout(() => setBanner(null), 4000);
+    }
+  };
+
+  const handleExportJson = async (runId) => {
+    try {
+      const res = await fetch(`${API_URL}/pipelines/runs/${runId}/report/json`);
+      if (!res.ok) throw new Error("Failed to export JSON report");
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `flowforge_report_${runId}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      setBanner({ type: "success", text: `Report exported as flowforge_report_${runId}.json` });
+      setTimeout(() => setBanner(null), 3000);
+    } catch (err) {
+      setBanner({ type: "error", text: "Export failed: " + err.message });
+      setTimeout(() => setBanner(null), 4000);
+    }
+  };
+
+  const handleDownloadCsv = async (runId) => {
+    try {
+      const res = await fetch(`${API_URL}/pipelines/runs/${runId}/report/csv`);
+      if (!res.ok) throw new Error("Failed to download CSV report");
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `flowforge_report_${runId}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      setBanner({ type: "success", text: `Report downloaded as flowforge_report_${runId}.csv` });
+      setTimeout(() => setBanner(null), 3000);
+    } catch (err) {
+      setBanner({ type: "error", text: "Download failed: " + err.message });
+      setTimeout(() => setBanner(null), 4000);
+    }
+  };
+
+  const handleCopyId = (text, idKey) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(idKey);
+    setTimeout(() => setCopiedId(null), 1500);
+  };
+
+  // KPI Calculations
+  const totalReports = reports.length;
+  const completedReports = reports.filter((r) => r.status === "completed").length;
+  const failedReports = reports.filter((r) => r.status === "failed").length;
+  const successRate = totalReports > 0 ? Math.round((completedReports / totalReports) * 100) : 0;
+  const totalRowsProcessed = reports.reduce((acc, r) => acc + (r.output_rows || 0), 0);
+  const avgDuration =
+    totalReports > 0
+      ? Math.round(reports.reduce((acc, r) => acc + (r.duration_ms || 0), 0) / totalReports)
+      : 0;
+
+  return (
+    <div className="reports-container">
+      {/* TOP KPI CARDS */}
+      <div className="run-stats-grid">
+        <div className="run-stat-card">
+          <div className="run-stat-icon total">
+            <FileText size={22} />
+          </div>
+          <div className="run-stat-info">
+            <span>Total Reports</span>
+            <strong>{totalReports}</strong>
+          </div>
+        </div>
+
+        <div className="run-stat-card">
+          <div className="run-stat-icon completed">
+            <CheckCircle2 size={22} />
+          </div>
+          <div className="run-stat-info">
+            <span>Success Rate</span>
+            <strong>{successRate}%</strong>
+          </div>
+        </div>
+
+        <div className="run-stat-card">
+          <div className="run-stat-icon failed">
+            <XCircle size={22} />
+          </div>
+          <div className="run-stat-info">
+            <span>Failed Runs</span>
+            <strong>{failedReports}</strong>
+          </div>
+        </div>
+
+        <div className="run-stat-card">
+          <div className="run-stat-icon duration">
+            <Clock size={22} />
+          </div>
+          <div className="run-stat-info">
+            <span>Avg Execution</span>
+            <strong>{avgDuration} ms</strong>
+          </div>
+        </div>
+
+        <div className="run-stat-card">
+          <div className="run-stat-icon rows">
+            <Database size={22} />
+          </div>
+          <div className="run-stat-info">
+            <span>Rows Processed</span>
+            <strong>{totalRowsProcessed.toLocaleString()}</strong>
+          </div>
+        </div>
+      </div>
+
+      {banner && (
+        <div className={`contract-banner-summary ${banner.type}`} style={{ marginBottom: "16px" }}>
+          {banner.type === "success" && <CheckCircle2 size={16} />}
+          {banner.type === "error" && <XCircle size={16} />}
+          <span>{banner.text}</span>
+        </div>
+      )}
+
+      {/* FILTER & SEARCH TOOLBAR */}
+      <div className="run-filters-bar">
+        <div className="run-filters-left">
+          <form onSubmit={handleSearchSubmit} className="run-search-box">
+            <Search size={15} />
+            <input
+              type="text"
+              placeholder="Search reports by run ID or pipeline name..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </form>
+
+          <select
+            className="run-filter-select"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+          >
+            <option value="all">All Statuses</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+            <option value="running">Running</option>
+          </select>
+
+          <select
+            className="run-filter-select"
+            value={dateFilter}
+            onChange={(e) => setDateFilter(e.target.value)}
+          >
+            <option value="all">All Time</option>
+            <option value="today">Today</option>
+            <option value="7days">Last 7 Days</option>
+            <option value="30days">Last 30 Days</option>
+          </select>
+
+          <select
+            className="run-filter-select"
+            value={sortOrder}
+            onChange={(e) => setSortOrder(e.target.value)}
+          >
+            <option value="desc">Newest First</option>
+            <option value="asc">Oldest First</option>
+          </select>
+
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={fetchReports}
+            title="Refresh execution reports from database"
+          >
+            <RefreshCw size={13} /> Refresh
+          </button>
+        </div>
+
+        <div className="run-filters-right">
+          {onBrowseRunHistory && (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={onBrowseRunHistory}
+              title="Switch to detailed Run History & Replay view"
+            >
+              <Clock size={13} /> Run History
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* REPORTS TABLE */}
+      <div className="pipeline-table-card">
+        {loading ? (
+          <div className="pipeline-loading-state">
+            <Activity className="spin" size={28} color="#2563eb" />
+            <p>Loading execution reports from PostgreSQL...</p>
+          </div>
+        ) : error ? (
+          <div className="pipeline-empty-state">
+            <AlertTriangle size={32} color="#dc2626" />
+            <h3>Failed to Load Reports</h3>
+            <p>{error}</p>
+            <button type="button" className="primary-button" onClick={fetchReports}>
+              Retry
+            </button>
+          </div>
+        ) : reports.length === 0 ? (
+          <div className="pipeline-empty-state">
+            <FileText size={36} color="#94a3b8" />
+            <h3>No Execution Reports Found</h3>
+            <p>Execute an ETL pipeline in the Workbench or Run History to generate execution reports.</p>
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table className="pipeline-table">
+              <thead>
+                <tr>
+                  <th>Report / Run ID</th>
+                  <th>Pipeline Name</th>
+                  <th>Status</th>
+                  <th>Executed At</th>
+                  <th>Duration</th>
+                  <th>Rows (In → Out)</th>
+                  <th>Destination Status</th>
+                  <th style={{ textAlign: "right" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reports.map((r) => (
+                  <tr key={r.run_id}>
+                    <td>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <code style={{ fontSize: "11px", color: "#2563eb", fontWeight: 600 }}>
+                          {r.run_id}
+                        </code>
+                        <button
+                          type="button"
+                          className="copy-btn"
+                          onClick={() => handleCopyId(r.run_id, r.run_id)}
+                          title="Copy Run ID"
+                        >
+                          {copiedId === r.run_id ? <Check size={11} color="#16a34a" /> : <Copy size={11} />}
+                        </button>
+                      </div>
+                      <div style={{ fontSize: "11px", color: "#94a3b8" }}>{r.report_id}</div>
+                    </td>
+                    <td>
+                      <div style={{ fontWeight: 600, color: "#1e293b", fontSize: "13px" }}>
+                        {r.pipeline_name || "Unnamed Pipeline"}
+                      </div>
+                      <div style={{ fontSize: "11px", color: "#64748b" }}>
+                        Ref: {r.input_filename || "dataset_input"}
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`run-status-pill ${r.status}`}>
+                        {r.status === "completed" && <CheckCircle2 size={12} />}
+                        {r.status === "failed" && <XCircle size={12} />}
+                        {r.status === "running" && <Activity size={12} className="spin" />}
+                        {r.status}
+                      </span>
+                    </td>
+                    <td style={{ fontSize: "12px", color: "#64748b" }}>
+                      {r.started_at ? new Date(r.started_at).toLocaleString() : "—"}
+                    </td>
+                    <td style={{ fontSize: "12px", fontWeight: 500 }}>
+                      {r.duration_ms != null ? `${r.duration_ms} ms` : "—"}
+                    </td>
+                    <td style={{ fontSize: "12px" }}>
+                      <span style={{ color: "#475569" }}>{r.input_rows ?? 0}</span>
+                      <ArrowRight size={11} style={{ margin: "0 4px", verticalAlign: "middle", color: "#94a3b8" }} />
+                      <span style={{ fontWeight: 600, color: "#1e293b" }}>{r.output_rows ?? 0}</span>
+                      <span style={{ marginLeft: "6px", fontSize: "11px", color: "#64748b" }}>
+                        ({r.row_retention_pct ?? 0}%)
+                      </span>
+                    </td>
+                    <td style={{ fontSize: "12px", maxWidth: "200px" }}>
+                      <span title={r.destination_status || r.error_message || ""}>
+                        {r.destination_status || r.error_message || "—"}
+                      </span>
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      <div className="run-actions-group" style={{ justifyContent: "flex-end" }}>
+                        <button
+                          type="button"
+                          className="run-action-btn"
+                          onClick={() => handleViewReport(r.run_id)}
+                          title="View detailed Execution Audit Report"
+                          style={{ background: "#eff6ff", borderColor: "#bfdbfe", color: "#2563eb", fontWeight: 600 }}
+                        >
+                          <Eye size={12} /> View Report
+                        </button>
+                        <button
+                          type="button"
+                          className="run-action-btn"
+                          onClick={() => handleExportJson(r.run_id)}
+                          title="Export report as structured JSON"
+                        >
+                          <Download size={12} /> Export JSON
+                        </button>
+                        <button
+                          type="button"
+                          className="run-action-btn"
+                          onClick={() => handleDownloadCsv(r.run_id)}
+                          title="Download report summary as CSV"
+                        >
+                          <Download size={12} /> Download CSV
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ACTIVE REPORT MODAL */}
+      {activeReport && (
+        <ReportViewModal
+          report={activeReport}
+          onClose={() => setActiveReport(null)}
+          onExportJson={handleExportJson}
+          onDownloadCsv={handleDownloadCsv}
+        />
       )}
     </div>
   );

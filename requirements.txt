@@ -3,5 +3,4 @@ uvicorn
 python-multipart
 pandas
 python-dotenv
-google-genai
-mysql-connector-python
+psycopg2-binary

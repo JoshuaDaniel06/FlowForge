@@ -5,7 +5,6 @@ import {
   BarChart3,
   Database,
   GitBranch,
-  Sparkles,
   FileCheck2,
   Server,
   Activity,
@@ -23,6 +22,14 @@ import {
   Menu,
   X,
   Search,
+  Plus,
+  ArrowUp,
+  ArrowDown,
+  Play,
+  Check,
+  Edit2,
+  Sliders,
+  Layers,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -38,7 +45,7 @@ import "./App.css";
 
 const API_URL = (
   import.meta.env.VITE_API_URL ||
-  "https://datamedic-ai-production.up.railway.app"
+  "http://localhost:8000"
 ).replace(/\/+$/, "");
 
 /* =========================================================
@@ -53,6 +60,11 @@ const NAV_ITEMS = [
         id: "overview",
         label: "Overview",
         icon: LayoutDashboard,
+      },
+      {
+        id: "workbench",
+        label: "Pipeline Workbench",
+        icon: GitBranch,
       },
       {
         id: "upload",
@@ -72,12 +84,7 @@ const NAV_ITEMS = [
       {
         id: "etl",
         label: "ETL Pipeline",
-        icon: GitBranch,
-      },
-      {
-        id: "ai",
-        label: "AI Insights",
-        icon: Sparkles,
+        icon: Layers,
       },
     ],
   },
@@ -90,8 +97,8 @@ const NAV_ITEMS = [
         icon: Database,
       },
       {
-        id: "mysql",
-        label: "MySQL Database",
+        id: "postgres",
+        label: "PostgreSQL Database",
         icon: Server,
       },
     ],
@@ -116,9 +123,7 @@ function App() {
   const [file, setFile] = useState(null);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiInsights, setAiInsights] = useState("");
-  const [mysqlLoadResult, setMysqlLoadResult] = useState(null);
+  const [dbLoadResult, setDbLoadResult] = useState(null);
   const [activePage, setActivePage] = useState("overview");
   const [mobileMenu, setMobileMenu] = useState(false);
   const [message, setMessage] = useState("");
@@ -135,8 +140,7 @@ function App() {
 
     setFile(selectedFile);
     setResult(null);
-    setAiInsights("");
-    setMysqlLoadResult(null);
+    setDbLoadResult(null);
     setMessage("");
   };
 
@@ -170,7 +174,6 @@ function App() {
 
       setResult(data);
       setLastUpdated(new Date());
-      setAiInsights("");
       setActivePage("overview");
       setMessage("Dataset analyzed successfully.");
     } catch (error) {
@@ -183,57 +186,6 @@ function App() {
       setLoading(false);
     }
   };
-
-  /* =======================================================
-     AI INSIGHTS
-  ======================================================= */
-
-  const getAIInsights = async () => {
-  if (!file) {
-    setMessage("Please select a CSV file first.");
-    return;
-  }
-
-  setAiLoading(true);
-  setMessage("");
-
-  try {
-    const formData = new FormData();
-    formData.append("file", file);
-
-    const response = await fetch(`${API_URL}/ai-insights`, {
-      method: "POST",
-      body: formData,
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(
-        data.detail || "Failed to generate AI insights."
-      );
-    }
-
-    setLastUpdated(new Date());
-
-    setAiInsights(
-      data.ai_analysis ||
-        data.insights ||
-        data.analysis ||
-        data.message ||
-        "No AI insights were returned."
-    );
-  } catch (error) {
-    console.error("AI Insights Error:", error);
-
-    setMessage(
-      error.message ||
-        "Unable to generate AI insights. Please try again."
-    );
-  } finally {
-    setAiLoading(false);
-  }
-};
 
   /* =======================================================
      DOWNLOAD CLEANED CSV
@@ -283,10 +235,10 @@ function App() {
   };
 
   /* =======================================================
-     LOAD MYSQL
+     LOAD POSTGRESQL
   ======================================================= */
 
-  const loadToMySQL = async () => {
+  const loadToPostgres = async () => {
     if (!file) {
       setMessage("Please upload a CSV file first.");
       return;
@@ -302,21 +254,21 @@ function App() {
       });
 
       if (!response.ok) {
-        throw new Error("Failed to load data into MySQL.");
+        throw new Error("Failed to load data into PostgreSQL.");
       }
 
       const data = await response.json();
 
-      setMysqlLoadResult(data);
+      setDbLoadResult(data);
       setLastUpdated(new Date());
       setMessage(
-        data.message || "Data loaded into MySQL successfully."
+        data.message || "Data loaded into PostgreSQL successfully."
       );
     } catch (error) {
       console.error(error);
       setMessage(
         error.message ||
-          "Unable to load data into MySQL."
+          "Unable to load data into PostgreSQL."
       );
     }
   };
@@ -357,21 +309,21 @@ function App() {
         title: "ETL Pipeline",
         subtitle: "Track the data ingestion and transformation flow",
       },
-      ai: {
-        title: "AI Insights",
-        subtitle: "Gemini-powered data quality interpretation",
-      },
       records: {
         title: "Dataset Records",
         subtitle: "Explore the analyzed customer records",
       },
-      mysql: {
-        title: "MySQL Database",
-        subtitle: "Load and manage cleaned data in MySQL",
+      workbench: {
+        title: "Pipeline Workbench",
+        subtitle: "Design, configure, and validate your data transformation workflows",
+      },
+      postgres: {
+        title: "PostgreSQL Database",
+        subtitle: "Load and manage cleaned data in PostgreSQL",
       },
       api: {
         title: "API Status",
-        subtitle: "Monitor DataMedic backend availability",
+        subtitle: "Monitor FlowForge backend availability",
       },
     };
 
@@ -401,12 +353,12 @@ function App() {
       <aside className={`sidebar ${mobileMenu ? "mobile-open" : ""}`}>
         <div className="brand">
           <div className="brand-icon">
-            DM
+            FF
           </div>
 
           <div className="brand-text">
-            <h1>DataMedic AI</h1>
-            <span>DATA QUALITY & ETL</span>
+            <h1>FlowForge</h1>
+            <span>ETL PIPELINE PLATFORM</span>
           </div>
         </div>
 
@@ -448,8 +400,8 @@ function App() {
           <div className="status-dot"></div>
 
           <div>
-            <strong>DataMedic AI</strong>
-            <span>Data Quality &amp; ETL v1.0</span>
+            <strong>FlowForge</strong>
+            <span>ETL Pipeline Platform v2.0</span>
           </div>
         </div>
       </aside>
@@ -507,9 +459,16 @@ function App() {
             navigate={navigate}
             analyzeFile={analyzeFile}
             loading={loading}
-            getAIInsights={getAIInsights}
             downloadCleanedCSV={downloadCleanedCSV}
-            loadToMySQL={loadToMySQL}
+            loadToPostgres={loadToPostgres}
+          />
+        )}
+
+        {activePage === "workbench" && (
+          <PipelineWorkbenchPage
+            file={file}
+            result={result}
+            navigate={navigate}
           />
         )}
 
@@ -542,18 +501,8 @@ function App() {
           <ETLPage
             file={file}
             result={result}
-            mysqlLoadResult={mysqlLoadResult}
-            aiInsights={aiInsights}
-            loadToMySQL={loadToMySQL}
-          />
-        )}
-
-        {activePage === "ai" && (
-          <AIInsightsPage
-            result={result}
-            aiInsights={aiInsights}
-            aiLoading={aiLoading}
-            getAIInsights={getAIInsights}
+            dbLoadResult={dbLoadResult}
+            loadToPostgres={loadToPostgres}
           />
         )}
 
@@ -561,19 +510,18 @@ function App() {
           <DatasetRecordsPage result={result} />
         )}
 
-        {activePage === "mysql" && (
-          <MySQLPage
+        {activePage === "postgres" && (
+          <PostgreSQLPage
             result={result}
             file={file}
-            mysqlLoadResult={mysqlLoadResult}
-            loadToMySQL={loadToMySQL}
+            dbLoadResult={dbLoadResult}
+            loadToPostgres={loadToPostgres}
           />
         )}
 
         {activePage === "api" && (
           <APIStatusPage
-            mysqlConnected={mysqlLoadResult?.status === "success"}
-            geminiAvailable={Boolean(aiInsights)}
+            dbConnected={dbLoadResult?.status === "success"}
           />
         )}
       </main>
@@ -642,17 +590,1074 @@ function QualityBarChart({
 }
 
 /* =========================================================
+   STEP CONFIG MODAL (STAGE 2)
+========================================================= */
+
+const TRANSFORMATION_TYPES = [
+  { id: "filter_rows", label: "Filter Rows", description: "Filter rows by column conditions" },
+  { id: "sort_rows", label: "Sort Rows", description: "Sort records by column order" },
+  { id: "select_columns", label: "Select Columns", description: "Retain specific columns" },
+  { id: "rename_column", label: "Rename Column", description: "Rename a single column" },
+  { id: "drop_columns", label: "Drop Columns", description: "Remove specified columns" },
+  { id: "reorder_columns", label: "Reorder Columns", description: "Change output column ordering" },
+  { id: "remove_duplicates", label: "Remove Duplicates", description: "Deduplicate by key columns" },
+  { id: "type_conversion", label: "Type Conversion", description: "Cast data type with error policy" },
+  { id: "derived_column", label: "Derived Column", description: "Compute new column with safe operations" },
+  { id: "aggregation", label: "Aggregation", description: "Group-by and aggregate metrics" },
+];
+
+function StepConfigModal({
+  isOpen,
+  onClose,
+  onSave,
+  stepToEdit,
+  availableColumns = [],
+}) {
+  const [name, setName] = useState("");
+  const [type, setType] = useState("filter_rows");
+  const [params, setParams] = useState({});
+  const [errorMsg, setErrorMsg] = useState("");
+
+  useEffect(() => {
+    if (stepToEdit) {
+      setName(stepToEdit.name || "");
+      setType(stepToEdit.type || "filter_rows");
+      setParams(stepToEdit.params || {});
+    } else {
+      setName("New Transformation");
+      setType("filter_rows");
+      setParams({
+        column: availableColumns[0] || "age",
+        operator: ">",
+        value: "18",
+      });
+    }
+    setErrorMsg("");
+  }, [stepToEdit, isOpen, availableColumns]);
+
+  if (!isOpen) return null;
+
+  const handleTypeChange = (newType) => {
+    setType(newType);
+    if (newType === "filter_rows") {
+      setParams({ column: availableColumns[0] || "", operator: "=", value: "" });
+    } else if (newType === "sort_rows") {
+      setParams({ column: availableColumns[0] || "", ascending: true, nulls: "last" });
+    } else if (newType === "select_columns") {
+      setParams({ columns: availableColumns.slice(0, 3) });
+    } else if (newType === "rename_column") {
+      setParams({ old_name: availableColumns[0] || "", new_name: "" });
+    } else if (newType === "drop_columns") {
+      setParams({ columns: [availableColumns[0] || ""] });
+    } else if (newType === "reorder_columns") {
+      setParams({ columns: [...availableColumns] });
+    } else if (newType === "remove_duplicates") {
+      setParams({ subset: [availableColumns[0] || "email"], keep: "first" });
+    } else if (newType === "type_conversion") {
+      setParams({ column: availableColumns[0] || "", target_type: "integer", policy: "set_null" });
+    } else if (newType === "derived_column") {
+      setParams({ new_column: "calculated_col", operation: "uppercase", column: availableColumns[0] || "" });
+    } else if (newType === "aggregation") {
+      setParams({ group_by: [availableColumns[0] || "city"], agg_func: "count", value_column: availableColumns[1] || "id", output_name: "total_count" });
+    } else {
+      setParams({});
+    }
+  };
+
+  const handleSave = () => {
+    if (!name.trim()) {
+      setErrorMsg("Step name is required.");
+      return;
+    }
+    onSave({
+      id: stepToEdit?.id || `step_${Date.now()}`,
+      name: name.trim(),
+      type,
+      params,
+    });
+    onClose();
+  };
+
+  return (
+    <div className="cleaned-customer-overlay" onClick={onClose}>
+      <div className="cleaned-customer-modal" style={{ width: "min(680px, 95%)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="cleaned-customer-modal-header">
+          <div>
+            <h3>{stepToEdit ? "Edit Transformation Step" : "Add Transformation Step"}</h3>
+            <p>Define transformation parameters and validation logic</p>
+          </div>
+          <button type="button" onClick={onClose}>×</button>
+        </div>
+
+        <div className="pipeline-modal-body">
+          {errorMsg && (
+            <div className="notification" style={{ background: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca" }}>
+              <CircleAlert size={16} />
+              <span>{errorMsg}</span>
+            </div>
+          )}
+
+          <div className="pipeline-form-group">
+            <label>Step Name</label>
+            <input
+              type="text"
+              className="pipeline-form-input"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Filter Adults, Drop Unused Columns"
+            />
+          </div>
+
+          <div className="pipeline-form-group">
+            <label>Transformation Type</label>
+            <select
+              className="pipeline-form-select"
+              value={type}
+              onChange={(e) => handleTypeChange(e.target.value)}
+            >
+              {TRANSFORMATION_TYPES.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.label} — {t.description}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* TYPE-SPECIFIC CONFIGURATION */}
+          {type === "filter_rows" && (
+            <div className="pipeline-config-grid">
+              <div className="pipeline-form-group">
+                <label>Target Column</label>
+                <select
+                  className="pipeline-form-select"
+                  value={params.column || ""}
+                  onChange={(e) => setParams({ ...params, column: e.target.value })}
+                >
+                  {availableColumns.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="pipeline-form-group">
+                <label>Operator</label>
+                <select
+                  className="pipeline-form-select"
+                  value={params.operator || "="}
+                  onChange={(e) => setParams({ ...params, operator: e.target.value })}
+                >
+                  <option value="=">Equals (=)</option>
+                  <option value="!=">Not Equals (!=)</option>
+                  <option value=">">Greater Than (&gt;)</option>
+                  <option value="<">Less Than (&lt;)</option>
+                  <option value=">=">Greater Than or Equal (&gt;=)</option>
+                  <option value="<=">Less Than or Equal (&lt;=)</option>
+                  <option value="contains">Contains (text)</option>
+                  <option value="is_null">Is Null / Empty</option>
+                  <option value="is_not_null">Is Not Null</option>
+                </select>
+              </div>
+
+              {!["is_null", "is_not_null"].includes(params.operator) && (
+                <div className="pipeline-form-group">
+                  <label>Comparison Value</label>
+                  <input
+                    type="text"
+                    className="pipeline-form-input"
+                    value={params.value ?? ""}
+                    onChange={(e) => setParams({ ...params, value: e.target.value })}
+                    placeholder="Value to compare"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {type === "sort_rows" && (
+            <div className="pipeline-config-grid">
+              <div className="pipeline-form-group">
+                <label>Sort Column</label>
+                <select
+                  className="pipeline-form-select"
+                  value={params.column || ""}
+                  onChange={(e) => setParams({ ...params, column: e.target.value })}
+                >
+                  {availableColumns.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="pipeline-form-group">
+                <label>Order</label>
+                <select
+                  className="pipeline-form-select"
+                  value={params.ascending ? "asc" : "desc"}
+                  onChange={(e) => setParams({ ...params, ascending: e.target.value === "asc" })}
+                >
+                  <option value="asc">Ascending (A-Z, 0-9)</option>
+                  <option value="desc">Descending (Z-A, 9-0)</option>
+                </select>
+              </div>
+
+              <div className="pipeline-form-group">
+                <label>Null Handling</label>
+                <select
+                  className="pipeline-form-select"
+                  value={params.nulls || "last"}
+                  onChange={(e) => setParams({ ...params, nulls: e.target.value })}
+                >
+                  <option value="last">Nulls Last</option>
+                  <option value="first">Nulls First</option>
+                </select>
+              </div>
+            </div>
+          )}
+
+          {type === "select_columns" && (
+            <div className="pipeline-form-group">
+              <label>Columns to Retain (comma-separated)</label>
+              <input
+                type="text"
+                className="pipeline-form-input"
+                value={Array.isArray(params.columns) ? params.columns.join(", ") : (params.columns || "")}
+                onChange={(e) => setParams({
+                  ...params,
+                  columns: e.target.value.split(",").map(s => s.trim()).filter(Boolean)
+                })}
+                placeholder="id, name, email"
+              />
+              <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#64748b" }}>
+                Available: {availableColumns.join(", ")}
+              </p>
+            </div>
+          )}
+
+          {type === "rename_column" && (
+            <div className="pipeline-config-grid">
+              <div className="pipeline-form-group">
+                <label>Current Column Name</label>
+                <select
+                  className="pipeline-form-select"
+                  value={params.old_name || ""}
+                  onChange={(e) => setParams({ ...params, old_name: e.target.value })}
+                >
+                  {availableColumns.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="pipeline-form-group">
+                <label>New Column Name</label>
+                <input
+                  type="text"
+                  className="pipeline-form-input"
+                  value={params.new_name || ""}
+                  onChange={(e) => setParams({ ...params, new_name: e.target.value.trim() })}
+                  placeholder="e.g. customer_name"
+                />
+              </div>
+            </div>
+          )}
+
+          {type === "drop_columns" && (
+            <div className="pipeline-form-group">
+              <label>Columns to Drop (comma-separated)</label>
+              <input
+                type="text"
+                className="pipeline-form-input"
+                value={Array.isArray(params.columns) ? params.columns.join(", ") : (params.columns || "")}
+                onChange={(e) => setParams({
+                  ...params,
+                  columns: e.target.value.split(",").map(s => s.trim()).filter(Boolean)
+                })}
+                placeholder="e.g. temp_col, unused_id"
+              />
+              <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#64748b" }}>
+                Available: {availableColumns.join(", ")}
+              </p>
+            </div>
+          )}
+
+          {type === "reorder_columns" && (
+            <div className="pipeline-form-group">
+              <label>Output Columns in Desired Order (comma-separated)</label>
+              <input
+                type="text"
+                className="pipeline-form-input"
+                value={Array.isArray(params.columns) ? params.columns.join(", ") : (params.columns || "")}
+                onChange={(e) => setParams({
+                  ...params,
+                  columns: e.target.value.split(",").map(s => s.trim()).filter(Boolean)
+                })}
+                placeholder="e.g. id, city, name, email, age"
+              />
+              <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#64748b" }}>
+                Available: {availableColumns.join(", ")}
+              </p>
+            </div>
+          )}
+
+          {type === "remove_duplicates" && (
+            <div className="pipeline-config-grid">
+              <div className="pipeline-form-group">
+                <label>Key Column for Duplicate Check</label>
+                <select
+                  className="pipeline-form-select"
+                  value={Array.isArray(params.subset) ? params.subset[0] : (params.subset || "")}
+                  onChange={(e) => setParams({ ...params, subset: [e.target.value] })}
+                >
+                  {availableColumns.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="pipeline-form-group">
+                <label>Keep Policy</label>
+                <select
+                  className="pipeline-form-select"
+                  value={params.keep || "first"}
+                  onChange={(e) => setParams({ ...params, keep: e.target.value })}
+                >
+                  <option value="first">Keep First Occurrence</option>
+                  <option value="last">Keep Last Occurrence</option>
+                </select>
+              </div>
+            </div>
+          )}
+
+          {type === "type_conversion" && (
+            <div className="pipeline-config-grid">
+              <div className="pipeline-form-group">
+                <label>Column</label>
+                <select
+                  className="pipeline-form-select"
+                  value={params.column || ""}
+                  onChange={(e) => setParams({ ...params, column: e.target.value })}
+                >
+                  {availableColumns.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="pipeline-form-group">
+                <label>Target Type</label>
+                <select
+                  className="pipeline-form-select"
+                  value={params.target_type || "integer"}
+                  onChange={(e) => setParams({ ...params, target_type: e.target.value })}
+                >
+                  <option value="integer">Integer</option>
+                  <option value="decimal">Decimal / Float</option>
+                  <option value="string">String / Text</option>
+                  <option value="date">Date</option>
+                  <option value="boolean">Boolean</option>
+                </select>
+              </div>
+
+              <div className="pipeline-form-group">
+                <label>Invalid Value Policy</label>
+                <select
+                  className="pipeline-form-select"
+                  value={params.policy || "set_null"}
+                  onChange={(e) => setParams({ ...params, policy: e.target.value })}
+                >
+                  <option value="set_null">Set to Null</option>
+                  <option value="fail">Fail Pipeline</option>
+                  <option value="reject_row">Reject Affected Row</option>
+                </select>
+              </div>
+            </div>
+          )}
+
+          {type === "derived_column" && (
+            <div className="pipeline-config-grid">
+              <div className="pipeline-form-group">
+                <label>New Column Name</label>
+                <input
+                  type="text"
+                  className="pipeline-form-input"
+                  value={params.new_column || ""}
+                  onChange={(e) => setParams({ ...params, new_column: e.target.value })}
+                  placeholder="e.g. full_identifier"
+                />
+              </div>
+
+              <div className="pipeline-form-group">
+                <label>Source Column</label>
+                <select
+                  className="pipeline-form-select"
+                  value={params.column || ""}
+                  onChange={(e) => setParams({ ...params, column: e.target.value })}
+                >
+                  {availableColumns.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="pipeline-form-group">
+                <label>Operation</label>
+                <select
+                  className="pipeline-form-select"
+                  value={params.operation || "uppercase"}
+                  onChange={(e) => setParams({ ...params, operation: e.target.value })}
+                >
+                  <option value="uppercase">Uppercase Text</option>
+                  <option value="lowercase">Lowercase Text</option>
+                  <option value="strip">Trim Whitespace</option>
+                  <option value="arithmetic_add">Add Constant (+)</option>
+                  <option value="arithmetic_mul">Multiply Constant (*)</option>
+                </select>
+              </div>
+
+              {["arithmetic_add", "arithmetic_mul"].includes(params.operation) && (
+                <div className="pipeline-form-group">
+                  <label>Operand Value</label>
+                  <input
+                    type="number"
+                    className="pipeline-form-input"
+                    value={params.operand ?? 1}
+                    onChange={(e) => setParams({ ...params, operand: Number(e.target.value) })}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {type === "aggregation" && (
+            <div className="pipeline-config-grid">
+              <div className="pipeline-form-group">
+                <label>Group By Column</label>
+                <select
+                  className="pipeline-form-select"
+                  value={Array.isArray(params.group_by) ? params.group_by[0] : (params.group_by || "")}
+                  onChange={(e) => setParams({ ...params, group_by: [e.target.value] })}
+                >
+                  {availableColumns.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="pipeline-form-group">
+                <label>Function</label>
+                <select
+                  className="pipeline-form-select"
+                  value={params.agg_func || "count"}
+                  onChange={(e) => setParams({ ...params, agg_func: e.target.value })}
+                >
+                  <option value="count">Count</option>
+                  <option value="sum">Sum</option>
+                  <option value="mean">Average (Mean)</option>
+                  <option value="min">Minimum</option>
+                  <option value="max">Maximum</option>
+                </select>
+              </div>
+
+              <div className="pipeline-form-group">
+                <label>Metric Column</label>
+                <select
+                  className="pipeline-form-select"
+                  value={params.value_column || ""}
+                  onChange={(e) => setParams({ ...params, value_column: e.target.value })}
+                >
+                  {availableColumns.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="pipeline-form-group">
+                <label>Result Column Name</label>
+                <input
+                  type="text"
+                  className="pipeline-form-input"
+                  value={params.output_name || ""}
+                  onChange={(e) => setParams({ ...params, output_name: e.target.value })}
+                  placeholder="e.g. record_count"
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="pipeline-modal-footer">
+          <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
+          <button type="button" className="primary-button" onClick={handleSave}>
+            <Check size={16} /> Save Step
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   PIPELINE WORKBENCH PAGE (STAGE 2)
+========================================================= */
+
+function PipelineWorkbenchPage({
+  file,
+  result,
+  navigate,
+}) {
+  const [pipelineId, setPipelineId] = useState("");
+  const [name, setName] = useState("Customer Ingestion & Quality Pipeline");
+  const [description, setDescription] = useState("Standardize customer demographics, drop duplicates and load to PostgreSQL");
+  const [inputSource, setInputSource] = useState("current_dataset");
+  const [destination, setDestination] = useState({ type: "postgres", table: "customers" });
+  const [errorPolicy, setErrorPolicy] = useState("stop_on_error");
+  const [status, setStatus] = useState("draft");
+  const [version, setVersion] = useState(1);
+  const [steps, setSteps] = useState([
+    {
+      id: "step_1",
+      name: "Deduplicate by Email",
+      type: "remove_duplicates",
+      params: { subset: ["email"], keep: "first" },
+    },
+    {
+      id: "step_2",
+      name: "Filter Valid Ages",
+      type: "filter_rows",
+      params: { column: "age", operator: ">=", value: "0" },
+    },
+    {
+      id: "step_3",
+      name: "Sort By City",
+      type: "sort_rows",
+      params: { column: "city", ascending: true, nulls: "last" },
+    },
+  ]);
+
+  const [savedPipelines, setSavedPipelines] = useState([]);
+  const [selectedSavedId, setSelectedSavedId] = useState("");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingStepIndex, setEditingStepIndex] = useState(null);
+  const [validationResult, setValidationResult] = useState(null);
+  const [bannerMessage, setBannerMessage] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [isValidating, setIsValidating] = useState(false);
+
+  const availableColumns = result?.records?.[0]
+    ? Object.keys(result.records[0])
+    : ["id", "name", "email", "age", "city"];
+
+  const loadSavedPipelines = async () => {
+    try {
+      const res = await fetch(`${API_URL}/pipelines`);
+      if (res.ok) {
+        const data = await res.json();
+        setSavedPipelines(data.pipelines || []);
+      }
+    } catch (err) {
+      console.error("Failed to load pipelines:", err);
+    }
+  };
+
+  useEffect(() => {
+    loadSavedPipelines();
+  }, []);
+
+  const handleNewPipeline = () => {
+    setPipelineId(`pl_${Date.now()}`);
+    setName("New Draft Pipeline");
+    setDescription("");
+    setInputSource("current_dataset");
+    setDestination({ type: "postgres", table: "customers" });
+    setErrorPolicy("stop_on_error");
+    setVersion(1);
+    setStatus("draft");
+    setSelectedSavedId("");
+    setSteps([]);
+    setValidationResult(null);
+    setBannerMessage("Created new pipeline draft.");
+  };
+
+  const handleOpenSavedPipeline = async (pId) => {
+    if (!pId) return;
+    try {
+      const res = await fetch(`${API_URL}/pipelines/${pId}`);
+      if (res.ok) {
+        const data = await res.json();
+        const p = data.pipeline;
+        setPipelineId(p.id);
+        setName(p.name);
+        setDescription(p.description || "");
+        setInputSource(p.input_source?.type || "current_dataset");
+        setDestination(p.destination || { type: "postgres", table: "customers" });
+        setErrorPolicy(p.error_policy || "stop_on_error");
+        setSteps(p.steps || []);
+        setVersion(p.version || 1);
+        setStatus("saved");
+        setSelectedSavedId(p.id);
+        setValidationResult(null);
+        setBannerMessage(`Loaded pipeline '${p.name}'.`);
+      }
+    } catch (err) {
+      console.error(err);
+      setBannerMessage("Failed to load pipeline from database.");
+    }
+  };
+
+  const handleAddStepClick = () => {
+    setEditingStepIndex(null);
+    setModalOpen(true);
+  };
+
+  const handleEditStepClick = (index) => {
+    setEditingStepIndex(index);
+    setModalOpen(true);
+  };
+
+  const handleSaveStep = (stepData) => {
+    if (editingStepIndex !== null) {
+      const updated = [...steps];
+      updated[editingStepIndex] = stepData;
+      setSteps(updated);
+    } else {
+      setSteps([...steps, stepData]);
+    }
+    setStatus("draft");
+    setValidationResult(null);
+  };
+
+  const handleDuplicateStep = (index) => {
+    const stepToCopy = steps[index];
+    const copy = {
+      ...stepToCopy,
+      id: `step_${Date.now()}`,
+      name: `${stepToCopy.name} (Copy)`,
+    };
+    const updated = [...steps];
+    updated.splice(index + 1, 0, copy);
+    setSteps(updated);
+    setStatus("draft");
+    setValidationResult(null);
+  };
+
+  const handleDeleteStep = (index) => {
+    const stepName = steps[index].name;
+    if (window.confirm(`Delete step "${stepName}"?`)) {
+      const updated = steps.filter((_, i) => i !== index);
+      setSteps(updated);
+      setStatus("draft");
+      setValidationResult(null);
+    }
+  };
+
+  const handleMoveStep = (index, direction) => {
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= steps.length) return;
+    const updated = [...steps];
+    const temp = updated[index];
+    updated[index] = updated[targetIndex];
+    updated[targetIndex] = temp;
+    setSteps(updated);
+    setStatus("draft");
+    setValidationResult(null);
+  };
+
+  const handleValidatePipeline = async () => {
+    setIsValidating(true);
+    setBannerMessage("");
+    try {
+      const payload = {
+        name,
+        description,
+        input_source: { type: inputSource },
+        steps,
+        destination,
+        error_policy: errorPolicy,
+      };
+
+      const res = await fetch(`${API_URL}/pipelines/validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      setValidationResult(data);
+      if (data.valid) {
+        setBannerMessage("Pipeline configuration is valid and ready for execution!");
+      }
+    } catch (err) {
+      console.error(err);
+      setBannerMessage("Validation request failed.");
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
+  const handleSavePipeline = async () => {
+    setIsSaving(true);
+    setBannerMessage("");
+    try {
+      const payload = {
+        id: pipelineId || undefined,
+        name,
+        description,
+        input_source: { type: inputSource },
+        steps,
+        destination,
+        error_policy: errorPolicy,
+        version,
+        status: "saved",
+      };
+
+      const res = await fetch(`${API_URL}/pipelines`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) throw new Error("Failed to save pipeline to PostgreSQL.");
+
+      const data = await res.json();
+      setPipelineId(data.pipeline.id);
+      setStatus("saved");
+      setBannerMessage(data.message || "Pipeline saved to PostgreSQL.");
+      loadSavedPipelines();
+    } catch (err) {
+      console.error(err);
+      setBannerMessage(err.message || "Failed to save pipeline.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div className="page-container">
+      {/* STATS OVERVIEW */}
+      <div className="stats">
+        <StatCard
+          label="PIPELINE"
+          value={status === "saved" ? "Saved" : "Draft"}
+          description={name || "Untitled"}
+          icon={GitBranch}
+        />
+        <StatCard
+          label="STEPS"
+          value={steps.length}
+          description="Transformations in sequence"
+          icon={Sliders}
+        />
+        <StatCard
+          label="DESTINATION"
+          value={destination?.type === "postgres" ? "PostgreSQL" : "CSV Download"}
+          description={destination?.table ? `Table: ${destination.table}` : "Direct export"}
+          icon={Database}
+        />
+        <StatCard
+          label="ERROR POLICY"
+          value={errorPolicy === "stop_on_error" ? "Stop on Error" : "Continue"}
+          description="Execution fault handling"
+          icon={CheckCircle2}
+        />
+      </div>
+
+      {bannerMessage && (
+        <div className="notification">
+          <CircleCheck size={17} />
+          <span>{bannerMessage}</span>
+        </div>
+      )}
+
+      {/* VALIDATION BANNER */}
+      {validationResult && (
+        <div className={`pipeline-validation-card ${validationResult.valid ? "valid" : "invalid"}`}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: "600" }}>
+            {validationResult.valid ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
+            <span>
+              {validationResult.valid
+                ? "Configuration Valid: All step dependencies and column requirements are satisfied."
+                : `Validation Issues Detected (${validationResult.errors.length} error${validationResult.errors.length > 1 ? "s" : ""}):`}
+            </span>
+          </div>
+          {validationResult.errors?.length > 0 && (
+            <ul style={{ margin: "6px 0 0", paddingLeft: "24px" }}>
+              {validationResult.errors.map((e, idx) => (
+                <li key={idx}>{e}</li>
+              ))}
+            </ul>
+          )}
+          {validationResult.warnings?.length > 0 && (
+            <div style={{ marginTop: "4px", color: "#b45309" }}>
+              <strong>Warnings: </strong>
+              {validationResult.warnings.join("; ")}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* PIPELINE CONFIGURATION PANEL */}
+      <div className="panel">
+        <PanelHeader
+          title="Pipeline Workbench"
+          description="Configure pipeline metadata, input source, and output destination"
+          icon={GitBranch}
+        />
+
+        <div className="pipeline-config-grid">
+          <div className="pipeline-form-group">
+            <label>Pipeline Name</label>
+            <input
+              type="text"
+              className="pipeline-form-input"
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setStatus("draft");
+              }}
+              placeholder="e.g. Clean Customer Data"
+            />
+          </div>
+
+          <div className="pipeline-form-group">
+            <label>Description</label>
+            <input
+              type="text"
+              className="pipeline-form-input"
+              value={description}
+              onChange={(e) => {
+                setDescription(e.target.value);
+                setStatus("draft");
+              }}
+              placeholder="Optional pipeline purpose or workflow summary"
+            />
+          </div>
+
+          <div className="pipeline-form-group">
+            <label>Input Source</label>
+            <select
+              className="pipeline-form-select"
+              value={inputSource}
+              onChange={(e) => {
+                setInputSource(e.target.value);
+                setStatus("draft");
+              }}
+            >
+              <option value="current_dataset">
+                {file ? `Current Upload (${file.name})` : "Current Dataset"}
+              </option>
+              <option value="sample_csv">Sample customers.csv</option>
+            </select>
+          </div>
+
+          <div className="pipeline-form-group">
+            <label>Destination</label>
+            <select
+              className="pipeline-form-select"
+              value={`${destination.type}:${destination.table || ""}`}
+              onChange={(e) => {
+                const [type, table] = e.target.value.split(":");
+                setDestination({ type, table });
+                setStatus("draft");
+              }}
+            >
+              <option value="postgres:customers">PostgreSQL: customers table</option>
+              <option value="postgres:pipeline_output">PostgreSQL: pipeline_output</option>
+              <option value="csv:download">CSV File Download</option>
+            </select>
+          </div>
+
+          <div className="pipeline-form-group">
+            <label>Error Policy</label>
+            <select
+              className="pipeline-form-select"
+              value={errorPolicy}
+              onChange={(e) => {
+                setErrorPolicy(e.target.value);
+                setStatus("draft");
+              }}
+            >
+              <option value="stop_on_error">Stop on First Error</option>
+              <option value="continue_on_warning">Continue on Warning</option>
+              <option value="skip_invalid">Skip Invalid Records</option>
+            </select>
+          </div>
+
+          <div className="pipeline-form-group">
+            <label>Load Saved Pipeline</label>
+            <select
+              className="pipeline-form-select"
+              value={selectedSavedId}
+              onChange={(e) => handleOpenSavedPipeline(e.target.value)}
+            >
+              <option value="">— Select Saved Pipeline —</option>
+              {savedPipelines.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.steps_count} steps)
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="pipeline-actions-bar">
+          <div className="pipeline-actions-left">
+            <button type="button" className="secondary-button" onClick={handleNewPipeline}>
+              <Plus size={15} /> New Pipeline
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={handleValidatePipeline}
+              disabled={isValidating}
+            >
+              <Check size={15} /> {isValidating ? "Validating..." : "Validate Pipeline"}
+            </button>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={handleSavePipeline}
+              disabled={isSaving}
+            >
+              <Database size={15} /> {isSaving ? "Saving..." : "Save Pipeline"}
+            </button>
+          </div>
+
+          <div className="pipeline-actions-right">
+            <button
+              type="button"
+              className="primary-button datamedic-load-mysql-button"
+              onClick={() => navigate("etl")}
+            >
+              <Play size={15} /> Run Pipeline
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* PIPELINE STEPS LIST */}
+      <div className="panel">
+        <div className="panel-header chart-panel-header">
+          <div>
+            <h3>Transformation Steps</h3>
+            <p>Execution order is sequential from top to bottom ({steps.length} configured)</p>
+          </div>
+
+          <button
+            type="button"
+            className="primary-button"
+            onClick={handleAddStepClick}
+          >
+            <Plus size={15} /> Add Step
+          </button>
+        </div>
+
+        {steps.length === 0 ? (
+          <EmptyState
+            icon={Sliders}
+            title="No Transformation Steps"
+            description="Add steps to filter, sort, transform, or aggregate your dataset records."
+            buttonText="+ Add Step"
+            onClick={handleAddStepClick}
+          />
+        ) : (
+          <div className="pipeline-steps-container">
+            {steps.map((step, index) => {
+              const typeMeta = TRANSFORMATION_TYPES.find((t) => t.id === step.type);
+              const summary = Object.entries(step.params || {})
+                .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(",") : v}`)
+                .join(" | ");
+
+              return (
+                <div key={step.id || index} className="pipeline-step-item">
+                  <div className="pipeline-step-left">
+                    <div className="pipeline-step-index">
+                      {String(index + 1).padStart(2, "0")}
+                    </div>
+                    <div className="pipeline-step-meta">
+                      <h4>
+                        {step.name}
+                        <span className="pipeline-step-badge">
+                          {typeMeta?.label || step.type}
+                        </span>
+                      </h4>
+                      <p>{summary || typeMeta?.description}</p>
+                    </div>
+                  </div>
+
+                  <div className="pipeline-step-buttons">
+                    <button
+                      type="button"
+                      className="pipeline-step-btn"
+                      title="Move Up"
+                      disabled={index === 0}
+                      onClick={() => handleMoveStep(index, -1)}
+                    >
+                      <ArrowUp size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="pipeline-step-btn"
+                      title="Move Down"
+                      disabled={index === steps.length - 1}
+                      onClick={() => handleMoveStep(index, 1)}
+                    >
+                      <ArrowDown size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="pipeline-step-btn"
+                      title="Duplicate Step"
+                      onClick={() => handleDuplicateStep(index)}
+                    >
+                      <Copy size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="pipeline-step-btn"
+                      title="Edit Step"
+                      onClick={() => handleEditStepClick(index)}
+                    >
+                      <Edit2 size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="pipeline-step-btn delete-btn"
+                      title="Delete Step"
+                      onClick={() => handleDeleteStep(index)}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* STEP CONFIGURATION MODAL */}
+      <StepConfigModal
+        isOpen={modalOpen}
+        onClose={() => setModalOpen(false)}
+        onSave={handleSaveStep}
+        stepToEdit={editingStepIndex !== null ? steps[editingStepIndex] : null}
+        availableColumns={availableColumns}
+      />
+    </div>
+  );
+}
+
+/* =========================================================
    OVERVIEW PAGE
 ========================================================= */
 
 function OverviewPage({
   result,
-    navigate,
-    analyzeFile,
-    loading,
-    getAIInsights,
+  navigate,
+  analyzeFile,
+  loading,
   downloadCleanedCSV,
-  loadToMySQL,
+  loadToPostgres,
 }) {
   const report = result?.quality_report ?? result;
   const totalRecords = report?.total_records ?? "—";
@@ -739,17 +1744,6 @@ function OverviewPage({
           />
 
           <QuickAction
-            icon={Sparkles}
-            title="Generate AI Insights"
-            description="Get Gemini recommendations"
-            onClick={() => {
-              getAIInsights();
-              navigate("ai");
-            }}
-            variant="ai"
-          />
-
-          <QuickAction
             icon={Download}
             title="Download Cleaned Data"
             description="Export the cleaned CSV"
@@ -759,9 +1753,9 @@ function OverviewPage({
 
           <QuickAction
             icon={Database}
-            title="Load to MySQL"
+            title="Load to PostgreSQL"
             description="Send cleaned records to the database"
-            onClick={loadToMySQL}
+            onClick={loadToPostgres}
             variant="mysql"
           />
 
@@ -1601,9 +2595,8 @@ function CleanedDataPage({
 function ETLPage({
   file,
   result,
-  mysqlLoadResult,
-  aiInsights,
-  loadToMySQL,
+  dbLoadResult,
+  loadToPostgres,
 }) {
   return (
     <div className="page-container">
@@ -1662,177 +2655,31 @@ function ETLPage({
 
           <PipelineStep
             number="04"
-            title="MySQL Load"
+            title="PostgreSQL Load"
             description={
-              mysqlLoadResult?.status === "success"
+              dbLoadResult?.status === "success"
                 ? "Load completed"
                 : "Not loaded"
             }
             icon={Database}
             completed={
-              mysqlLoadResult?.status === "success"
+              dbLoadResult?.status === "success"
             }
-          />
-
-          <div className="pipeline-line"></div>
-
-          <PipelineStep
-            number="05"
-            title="AI Insights"
-            description={
-              aiInsights
-                ? "Gemini analysis generated"
-                : "Not generated"
-            }
-            icon={Sparkles}
-            completed={Boolean(aiInsights)}
           />
 
         </div>
 
         <button
           className="primary-button datamedic-load-mysql-button"
-          onClick={loadToMySQL}
+          onClick={loadToPostgres}
           disabled={!file}
         >
           <Database size={17} />
-          Load to MySQL
+          Load to PostgreSQL
         </button>
 
       </div>
 
-    </div>
-  );
-}
-/* =========================================================
-   AI INSIGHTS
-========================================================= */
-
-function AIInsightsPage({
-  result,
-  aiInsights,
-  aiLoading,
-  getAIInsights,
-}) {
-  return (
-    <div className="page-container">
-
-      <div className="panel ai-intro">
-
-        <div className="ai-intro-icon">
-          <Sparkles size={25} />
-        </div>
-
-        <div>
-          <h3>Data Quality AI</h3>
-
-          <p>
-            Ask Gemini to interpret the detected data
-            quality problems and provide practical
-            recommendations.
-          </p>
-        </div>
-
-      </div>
-
-      <div className="panel">
-
-        {!result ? (
-          <EmptyState
-            icon={Sparkles}
-            title="No Dataset Analyzed"
-            description="Upload and analyze a CSV dataset first."
-          />
-        ) : (
-          <>
-            {!aiInsights && !aiLoading && (
-              <div className="ai-placeholder">
-
-                <div className="ai-placeholder-icon datamedic-ai-icon">
-                  <Sparkles size={30} />
-                </div>
-
-                <h3>
-                  AI Data Quality Assistant
-                </h3>
-
-                <p>
-                  Gemini can analyze the detected
-                  data-quality problems and provide
-                  practical recommendations for improving
-                  your dataset.
-                </p>
-
-               <button
-  className="dark-button datamedic-ai-button"
-  onClick={getAIInsights}
->
-  Generate AI Insights
-</button>
-              </div>
-            )}
-
-            {aiLoading && (
-              <div className="ai-placeholder">
-
-                <div className="ai-placeholder-icon">
-                  <RefreshCw
-                    size={30}
-                    className="spin"
-                  />
-                </div>
-
-                <h3>
-                  Gemini is analyzing your dataset...
-                </h3>
-
-                <p>
-                  DataMedic AI is generating quality
-                  insights and recommendations.
-                </p>
-
-              </div>
-            )}
-
-            {aiInsights && !aiLoading && (
-              <div className="ai-result">
-
-                <div className="ai-result-header">
-
-                  <div className="ai-result-icon datamedic-ai-icon">
-                    <Sparkles size={19} />
-                  </div>
-
-                  <div>
-                    <h3>
-                      Gemini Data Quality Analysis
-                    </h3>
-
-                    <p>
-                      AI-generated analysis of your dataset
-                    </p>
-                  </div>
-
-                </div>
-
-                <div className="ai-result-content">
-                  {aiInsights}
-                </div>
-
-                <button
-                  className="secondary-button datamedic-ai-button"
-                  onClick={getAIInsights}
-                >
-                  <RefreshCw size={15} />
-                  Generate Again
-                </button>
-
-              </div>
-            )}
-          </>
-        )}
-
-      </div>
     </div>
   );
 }
@@ -2280,16 +3127,16 @@ function DatasetRecordsPage({ result }) {
   );
 }
 /* =========================================================
-   MYSQL PAGE
+   POSTGRESQL PAGE
 ========================================================= */
 
-function MySQLPage({
+function PostgreSQLPage({
   result,
   file,
-  mysqlLoadResult,
-  loadToMySQL,
+  dbLoadResult,
+  loadToPostgres,
 }) {
-  const databaseReport = mysqlLoadResult?.quality_report;
+  const databaseReport = dbLoadResult?.quality_report;
 
   const databaseRows =
   Array.isArray(result?.cleaned_records_data)
@@ -2300,6 +3147,14 @@ function MySQLPage({
   const [selectedCity, setSelectedCity] = useState("All Cities");
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
+  const [dbStatus, setDbStatus] = useState(null);
+
+  useEffect(() => {
+    fetch(`${API_URL}/db/status`)
+      .then((res) => res.json())
+      .then((data) => setDbStatus(data))
+      .catch(() => {});
+  }, [dbLoadResult]);
 
   const getValue = (row, keys) => {
     for (const key of keys) {
@@ -2400,6 +3255,10 @@ function MySQLPage({
     setCurrentPage(1);
   };
 
+  const isConnected =
+    dbLoadResult?.status === "success" ||
+    dbStatus?.status === "connected";
+
   return (
     <div className="page-container">
 
@@ -2407,25 +3266,21 @@ function MySQLPage({
 
         <StatCard
           label="DATABASE"
-          value="MySQL"
+          value="PostgreSQL"
           description="Relational database"
           icon={Database}
         />
 
         <StatCard
           label="STATUS"
-          value={
-            mysqlLoadResult?.status === "success"
-              ? "Connected"
-              : "Unverified"
-          }
-          description="Verified by a successful load"
+          value={isConnected ? "Connected" : "Unverified"}
+          description={isConnected ? "Connected & verified" : "Check credentials in .env"}
           icon={CircleCheck}
         />
 
         <StatCard
           label="RECORDS"
-          value={mysqlLoadResult?.records_loaded ?? "—"}
+          value={dbLoadResult?.records_loaded ?? "—"}
           description="Records reported as loaded"
           icon={Server}
         />
@@ -2440,14 +3295,14 @@ function MySQLPage({
       </div>
 
       {/* =====================================================
-          MYSQL DATABASE
+          POSTGRESQL DATABASE
       ===================================================== */}
 
       <div className="panel">
 
         <PanelHeader
-          title="MySQL Database"
-          description="Load the cleaned dataset into MySQL"
+          title="PostgreSQL Database"
+          description="Load the cleaned dataset into PostgreSQL"
           icon={Database}
         />
 
@@ -2459,18 +3314,20 @@ function MySQLPage({
 
           <div className="database-info">
 
-            <h3>MySQL Database</h3>
+            <h3>PostgreSQL Database</h3>
 
             <p>
-              {mysqlLoadResult?.status === "success"
-                ? mysqlLoadResult.message ||
+              {dbLoadResult?.status === "success"
+                ? dbLoadResult.message ||
                   "The load endpoint confirmed a successful database load."
-                : "Database connectivity has not been verified in this session. Load a dataset to verify the connection."}
+                : dbStatus?.status === "connected"
+                ? `Connected to database '${dbStatus.database}' at ${dbStatus.host}:${dbStatus.port}. Ready to load records.`
+                : "Database connectivity has not been verified in this session. Configure .env and load a dataset to verify."}
             </p>
 
             <div className="database-tags">
 
-              <span>MySQL</span>
+              <span>PostgreSQL</span>
 
               <span>
                 {file?.name || "No dataset selected"}
@@ -2486,7 +3343,7 @@ function MySQLPage({
 
           <button
             className="primary-button datamedic-mysql-load-button"
-            onClick={loadToMySQL}
+            onClick={loadToPostgres}
             disabled={!file}
           >
             Load Data
@@ -2812,19 +3669,21 @@ function MySQLPage({
    API STATUS
 ========================================================= */
 
-function APIStatusPage({ mysqlConnected, geminiAvailable }) {
+function APIStatusPage({ dbConnected }) {
   const [apiStatus, setApiStatus] = useState("checking");
+  const [dbStatus, setDbStatus] = useState(null);
 
   const checkAPI = async () => {
     setApiStatus("checking");
 
     try {
       const response = await fetch(`${API_URL}/`);
+      setApiStatus(response.ok ? "healthy" : "error");
 
-      if (response.ok) {
-        setApiStatus("healthy");
-      } else {
-        setApiStatus("error");
+      const dbRes = await fetch(`${API_URL}/db/status`);
+      if (dbRes.ok) {
+        const data = await dbRes.json();
+        setDbStatus(data);
       }
     } catch {
       setApiStatus("error");
@@ -2832,12 +3691,11 @@ function APIStatusPage({ mysqlConnected, geminiAvailable }) {
   };
 
   useEffect(() => {
-    fetch(`${API_URL}/`)
-      .then((response) => {
-        setApiStatus(response.ok ? "healthy" : "error");
-      })
-      .catch(() => setApiStatus("error"));
+    checkAPI();
   }, []);
+
+  const isPostgresHealthy =
+    dbConnected || dbStatus?.status === "connected";
 
   return (
     <div className="page-container">
@@ -2858,17 +3716,10 @@ function APIStatusPage({ mysqlConnected, geminiAvailable }) {
         />
 
         <StatusCard
-          label="MYSQL"
-          value={mysqlConnected ? "connected" : "not verified"}
-          icon={Server}
-          status={mysqlConnected ? "healthy" : "unknown"}
-        />
-
-        <StatusCard
-          label="GEMINI AI"
-          value={geminiAvailable ? "available" : "not verified"}
-          icon={Sparkles}
-          status={geminiAvailable ? "healthy" : "unknown"}
+          label="POSTGRESQL"
+          value={isPostgresHealthy ? "connected" : "not verified"}
+          icon={Database}
+          status={isPostgresHealthy ? "healthy" : "unknown"}
         />
 
       </div>
@@ -2877,7 +3728,7 @@ function APIStatusPage({ mysqlConnected, geminiAvailable }) {
 
         <PanelHeader
           title="Backend Information"
-          description="DataMedic AI service configuration"
+          description="FlowForge service configuration"
           icon={Server}
         />
 
@@ -2889,18 +3740,18 @@ function APIStatusPage({ mysqlConnected, geminiAvailable }) {
           />
 
           <InfoRow
+            label="Platform"
+            value="FlowForge ETL"
+          />
+
+          <InfoRow
             label="Backend"
             value="FastAPI"
           />
 
           <InfoRow
             label="Database"
-            value="MySQL"
-          />
-
-          <InfoRow
-            label="AI"
-            value="Gemini"
+            value="PostgreSQL"
           />
 
           <InfoRow

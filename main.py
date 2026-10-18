@@ -101,12 +101,4 @@ quality_report = {
 with open("quality_report.json", "w") as file:
     json.dump(quality_report, file, indent=4)
 
-print("\nQuality report saved!")
-from llm_assistant import analyze_quality_report
-
-print("\nAI ANALYSIS")
-print("---------------------------")
-
-ai_analysis = analyze_quality_report(quality_report)
-
-print(ai_analysis)
+print("\nQuality report saved!")

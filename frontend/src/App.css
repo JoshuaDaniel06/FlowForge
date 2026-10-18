@@ -6136,3 +6136,114 @@ body {
   background: #fee2e2;
   color: #b91c1c;
 }
+
+/* =========================================================
+   STAGE 5: PIPELINE EXECUTION ENGINE STYLES
+========================================================= */
+
+.pipeline-exec-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 10px;
+  margin-bottom: 14px;
+}
+
+.pipeline-exec-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #475569;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pipeline-exec-tab-btn:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #1e293b;
+}
+
+.pipeline-exec-tab-btn.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.pipeline-exec-tab-btn.error-tab {
+  border-color: #fca5a5;
+  color: #b91c1c;
+}
+
+.pipeline-exec-tab-btn.error-tab.active {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #ffffff;
+}
+
+.pipeline-log-terminal {
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 14px;
+  max-height: 340px;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #e2e8f0;
+}
+
+.pipeline-log-line {
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+
+.pipeline-log-line.error {
+  color: #f87171;
+  font-weight: 600;
+}
+
+.pipeline-log-line.warn {
+  color: #fbbf24;
+}
+
+.pipeline-log-line.info {
+  color: #94a3b8;
+}
+
+.pipeline-error-panel {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.pipeline-error-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.pipeline-error-message {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  background: #ffffff;
+  border: 1px solid #fca5a5;
+  border-radius: 6px;
+  padding: 10px 12px;
+  color: #991b1b;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 8px 0;
+}

@@ -454,3 +454,151 @@ def list_pipeline_runs(pipeline_id: str = None, limit: int = 50) -> list:
         }
         for r in rows
     ]
+
+
+def create_pipeline_run(pipeline_id: str, pipeline_name: str, input_filename: str = "dataset_input", input_rows: int = 0) -> str:
+    """Create an initial pending/running pipeline execution run record in PostgreSQL."""
+    import time
+    conn = get_connection()
+    cursor = conn.cursor()
+    run_id = f"run_{int(time.time() * 1000)}"
+    cursor.execute("""
+        INSERT INTO pipeline_runs (
+            run_id, pipeline_id, pipeline_name, status, started_at,
+            input_filename, input_rows
+        ) VALUES (
+            %s, %s, %s, 'running', CURRENT_TIMESTAMP, %s, %s
+        ) RETURNING run_id;
+    """, (run_id, pipeline_id, pipeline_name, input_filename, input_rows))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return run_id
+
+
+def finish_pipeline_run(run_id: str, run_data: dict, step_runs: list) -> str:
+    """Update pipeline run to completed/failed and record all step metrics."""
+    import json
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE pipeline_runs SET
+            status = %s,
+            completed_at = CURRENT_TIMESTAMP,
+            duration_ms = %s,
+            output_rows = %s,
+            completed_steps = %s,
+            failed_steps = %s,
+            destination_status = %s,
+            destination_table = %s,
+            error_message = %s
+        WHERE run_id = %s;
+    """, (
+        run_data.get("status", "completed"),
+        int(run_data.get("duration_ms", 0)),
+        int(run_data.get("output_rows", 0)),
+        int(run_data.get("completed_steps", 0)),
+        int(run_data.get("failed_steps", 0)),
+        run_data.get("destination_status"),
+        run_data.get("destination_table"),
+        run_data.get("error_message"),
+        run_id,
+    ))
+
+    # Clear any previous steps if retrying
+    cursor.execute("DELETE FROM pipeline_step_runs WHERE run_id = %s;", (run_id,))
+
+    for idx, s in enumerate(step_runs):
+        cursor.execute("""
+            INSERT INTO pipeline_step_runs (
+                run_id, step_id, step_name, step_type, step_order,
+                status, duration_ms, rows_in, rows_out, warnings, error_details
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s
+            );
+        """, (
+            run_id,
+            s.get("step_id") or f"step_{idx+1}",
+            s.get("step_name") or f"Step {idx+1}",
+            s.get("type"),
+            idx + 1,
+            s.get("status", "completed"),
+            int(s.get("duration_ms", 0)),
+            int(s.get("rows_before", 0)),
+            int(s.get("rows_after", 0)),
+            json.dumps(s.get("warnings", [])),
+            s.get("error"),
+        ))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return run_id
+
+
+def get_pipeline_run_details(run_id: str) -> dict:
+    """Retrieve full execution metadata and step-by-step metrics for a run."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT run_id, pipeline_id, pipeline_name, status, started_at, completed_at,
+               duration_ms, input_filename, input_rows, output_rows, completed_steps,
+               failed_steps, destination_status, destination_table, error_message
+        FROM pipeline_runs
+        WHERE run_id = %s;
+    """, (run_id,))
+    row = cursor.fetchone()
+    if not row:
+        cursor.close()
+        conn.close()
+        return None
+
+    run_meta = {
+        "run_id": row[0],
+        "pipeline_id": row[1],
+        "pipeline_name": row[2],
+        "status": row[3],
+        "started_at": row[4].isoformat() if row[4] else None,
+        "completed_at": row[5].isoformat() if row[5] else None,
+        "duration_ms": row[6],
+        "input_filename": row[7],
+        "input_rows": row[8],
+        "output_rows": row[9],
+        "completed_steps": row[10],
+        "failed_steps": row[11],
+        "destination_status": row[12],
+        "destination_table": row[13],
+        "error_message": row[14],
+    }
+
+    cursor.execute("""
+        SELECT step_id, step_name, step_type, step_order, status, duration_ms,
+               rows_in, rows_out, warnings, error_details
+        FROM pipeline_step_runs
+        WHERE run_id = %s
+        ORDER BY step_order ASC;
+    """, (run_id,))
+    step_rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    run_meta["steps"] = [
+        {
+            "step_id": sr[0],
+            "step_name": sr[1],
+            "type": sr[2],
+            "step_order": sr[3],
+            "status": sr[4],
+            "duration_ms": sr[5],
+            "rows_before": sr[6],
+            "rows_after": sr[7],
+            "row_delta": sr[7] - sr[6],
+            "warnings": sr[8] if isinstance(sr[8], list) else [],
+            "error": sr[9],
+        }
+        for sr in step_rows
+    ]
+
+    return run_meta

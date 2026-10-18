@@ -1238,117 +1238,453 @@ function StepPreviewModal({
    PIPELINE EXECUTION RESULTS MODAL (STAGE 3)
 ========================================================= */
 
+/* =========================================================
+   PIPELINE EXECUTION RESULTS MODAL (STAGE 5 - FEATURE 4)
+========================================================= */
+
 function PipelineExecutionModal({
   isOpen,
   onClose,
   executionResult,
   pipelineName,
+  onRetry,
+  isRetrying,
 }) {
   if (!isOpen || !executionResult) return null;
+
+  const isFailed = executionResult.status === "failed";
+  const [activeTab, setActiveTab] = useState(isFailed ? "error" : "output");
+  const [logs, setLogs] = useState([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
+  const [copiedLogs, setCopiedLogs] = useState(false);
 
   const summary = executionResult.summary || {};
   const telemetry = executionResult.step_telemetry || [];
   const records = executionResult.records || [];
   const columns = executionResult.columns || (records[0] ? Object.keys(records[0]) : []);
+  const failingStep = executionResult.failing_step || null;
+
+  // Whenever executionResult changes, reset default tab
+  useEffect(() => {
+    setActiveTab(executionResult.status === "failed" ? "error" : "output");
+  }, [executionResult?.run_id, executionResult?.status]);
+
+  // Load structured logs from backend
+  const loadLogs = async () => {
+    if (!executionResult?.run_id) return;
+    setLoadingLogs(true);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/runs/${executionResult.run_id}/logs`);
+      if (res.ok) {
+        const data = await res.json();
+        setLogs(data.logs || []);
+      }
+    } catch (e) {
+      console.error("Failed to load execution logs", e);
+    } finally {
+      setLoadingLogs(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen && executionResult?.run_id) {
+      loadLogs();
+    }
+  }, [isOpen, executionResult?.run_id]);
+
+  const handleCopyLogs = () => {
+    if (!logs || logs.length === 0) return;
+    navigator.clipboard.writeText(logs.join("\n"));
+    setCopiedLogs(true);
+    setTimeout(() => setCopiedLogs(false), 2000);
+  };
+
+  const handleExportCSV = () => {
+    if (!records || records.length === 0) return;
+    const cols = columns.length > 0 ? columns : Object.keys(records[0]);
+    const headerRow = cols.join(",");
+    const dataRows = records.map((r) =>
+      cols
+        .map((c) => {
+          const val = r[c] === null || r[c] === undefined ? "" : String(r[c]);
+          return `"${val.replace(/"/g, '""')}"`;
+        })
+        .join(",")
+    );
+    const csvContent = [headerRow, ...dataRows].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${(pipelineName || "pipeline").replace(/\s+/g, "_")}_${executionResult.run_id || "run"}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportJSON = () => {
+    if (!records || records.length === 0) return;
+    const jsonString = JSON.stringify(records, null, 2);
+    const blob = new Blob([jsonString], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${(pipelineName || "pipeline").replace(/\s+/g, "_")}_${executionResult.run_id || "run"}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="cleaned-customer-overlay" onClick={onClose}>
-      <div className="cleaned-customer-modal" style={{ width: "min(900px, 95%)" }} onClick={(e) => e.stopPropagation()}>
+      <div
+        className="cleaned-customer-modal"
+        style={{ width: "min(960px, 95%)", maxHeight: "90vh" }}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="cleaned-customer-modal-header">
           <div>
-            <h3>Workflow Execution: {pipelineName}</h3>
-            <p>Run ID: {executionResult.run_id} • Execution Complete</p>
+            <h3>Workflow Execution: {pipelineName || "Pipeline"}</h3>
+            <p style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "2px" }}>
+              <span>Run ID: {executionResult.run_id}</span>
+              <span>•</span>
+              <span style={{ color: isFailed ? "#dc2626" : "#16a34a", fontWeight: "600" }}>
+                {executionResult.status?.toUpperCase()}
+              </span>
+              {executionResult.started_at && (
+                <>
+                  <span>•</span>
+                  <span>Started: {new Date(executionResult.started_at).toLocaleTimeString()}</span>
+                </>
+              )}
+              {executionResult.completed_at && (
+                <>
+                  <span>•</span>
+                  <span>Completed: {new Date(executionResult.completed_at).toLocaleTimeString()}</span>
+                </>
+              )}
+            </p>
           </div>
           <button type="button" onClick={onClose}>×</button>
         </div>
 
-        <div className="pipeline-modal-body">
+        <div className="pipeline-modal-body" style={{ maxHeight: "calc(90vh - 140px)", overflowY: "auto" }}>
           {/* SUMMARY GRID */}
           <div className="pipeline-telemetry-grid">
             <div className="pipeline-telemetry-badge">
               <span>Run Status</span>
-              <strong style={{ color: executionResult.status === "success" ? "#16a34a" : "#dc2626" }}>
+              <strong style={{ color: isFailed ? "#dc2626" : "#16a34a" }}>
                 {executionResult.status?.toUpperCase()}
               </strong>
             </div>
             <div className="pipeline-telemetry-badge">
               <span>Total Duration</span>
-              <strong>{summary.total_duration_ms || 0} ms</strong>
+              <strong>{executionResult.duration_ms ?? summary.total_duration_ms ?? 0} ms</strong>
             </div>
             <div className="pipeline-telemetry-badge">
-              <span>Steps Executed</span>
-              <strong>{summary.steps_executed} / {summary.total_steps}</strong>
+              <span>Steps Completed</span>
+              <strong>
+                {executionResult.completed_steps ?? summary.steps_executed ?? 0} /{" "}
+                {summary.total_steps || telemetry.length}
+              </strong>
+            </div>
+            <div className="pipeline-telemetry-badge">
+              <span>Rows In → Out</span>
+              <strong>
+                {executionResult.input_rows ?? summary.initial_rows ?? 0} →{" "}
+                {executionResult.output_rows ?? summary.final_rows ?? 0}
+              </strong>
             </div>
             <div className="pipeline-telemetry-badge">
               <span>Records Loaded</span>
-              <strong style={{ color: "#2563eb" }}>{executionResult.records_loaded}</strong>
-            </div>
-            <div className="pipeline-telemetry-badge">
-              <span>Final Rows</span>
-              <strong>{summary.final_rows}</strong>
+              <strong style={{ color: "#2563eb" }}>{executionResult.records_loaded ?? 0}</strong>
             </div>
           </div>
 
+          {/* STATUS BANNER */}
           {executionResult.destination_status && (
-            <div className="notification" style={{ background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
-              <CircleCheck size={16} />
+            <div
+              className="notification"
+              style={{
+                background: isFailed ? "#fef2f2" : "#f0fdf4",
+                color: isFailed ? "#991b1b" : "#166534",
+                border: isFailed ? "1px solid #fecaca" : "1px solid #bbf7d0",
+                marginBottom: "12px",
+              }}
+            >
+              {isFailed ? <AlertTriangle size={16} /> : <CircleCheck size={16} />}
               <span>{executionResult.destination_status}</span>
             </div>
           )}
 
-          {/* STEP BY STEP TELEMETRY */}
-          <h4 style={{ margin: "10px 0 6px", fontSize: "14px", fontWeight: "600", color: "#334155" }}>
-            Step Execution Telemetry
-          </h4>
-          <div style={{ maxHeight: "200px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "6px" }}>
-            {telemetry.map((t, idx) => (
-              <div key={idx} className="pipeline-step-telemetry-row">
-                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <span style={{ fontSize: "12px", fontWeight: "600", color: "#64748b" }}>#{idx + 1}</span>
-                  <div>
-                    <strong style={{ fontSize: "13px", color: "#0f172a" }}>{t.step_name}</strong>
-                    <span className="pipeline-step-badge" style={{ marginLeft: "8px" }}>{t.type}</span>
-                  </div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: "16px", fontSize: "12px" }}>
-                  <span>{t.duration_ms} ms</span>
-                  <span>{t.rows_before} → {t.rows_after} rows</span>
-                  <span className={t.row_delta < 0 ? "pipeline-delta-negative" : "pipeline-delta-positive"}>
-                    {t.row_delta > 0 ? `+${t.row_delta}` : t.row_delta}
-                  </span>
+          {/* TAB BUTTONS (STAGE 5) */}
+          <div className="pipeline-exec-tabs">
+            <button
+              type="button"
+              className={`pipeline-exec-tab-btn ${activeTab === "output" ? "active" : ""}`}
+              onClick={() => setActiveTab("output")}
+            >
+              <Eye size={14} /> View Output ({records.length})
+            </button>
+            <button
+              type="button"
+              className={`pipeline-exec-tab-btn ${isFailed ? "error-tab" : ""} ${activeTab === "error" ? "active" : ""}`}
+              onClick={() => setActiveTab("error")}
+            >
+              {isFailed ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />} View Error {isFailed ? "(!)" : ""}
+            </button>
+            <button
+              type="button"
+              className={`pipeline-exec-tab-btn ${activeTab === "logs" ? "active" : ""}`}
+              onClick={() => {
+                setActiveTab("logs");
+                if (logs.length === 0) loadLogs();
+              }}
+            >
+              <FileCheck2 size={14} /> View Logs ({logs.length})
+            </button>
+            <button
+              type="button"
+              className={`pipeline-exec-tab-btn ${activeTab === "steps" ? "active" : ""}`}
+              onClick={() => setActiveTab("steps")}
+            >
+              <Sliders size={14} /> Step Telemetry ({telemetry.length})
+            </button>
+          </div>
+
+          {/* TAB 1: VIEW OUTPUT */}
+          {activeTab === "output" && (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
+                <span style={{ fontSize: "13px", color: "#475569" }}>
+                  Displaying final dataset ({records.length} records, {columns.length} columns)
+                </span>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    style={{ padding: "4px 10px", fontSize: "12px" }}
+                    onClick={handleExportCSV}
+                    disabled={records.length === 0}
+                  >
+                    <Download size={13} /> Export Results (CSV)
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    style={{ padding: "4px 10px", fontSize: "12px" }}
+                    onClick={handleExportJSON}
+                    disabled={records.length === 0}
+                  >
+                    <Download size={13} /> Export Results (JSON)
+                  </button>
                 </div>
               </div>
-            ))}
-          </div>
 
-          {/* SAMPLE OUTPUT */}
-          <h4 style={{ margin: "14px 0 6px", fontSize: "14px", fontWeight: "600", color: "#334155" }}>
-            Cleaned Output Sample ({records.length} records shown)
-          </h4>
-          <div className="pipeline-preview-table-wrapper">
-            <table className="cleaned-customer-table" style={{ width: "100%" }}>
-              <thead>
-                <tr>
-                  {columns.map((col) => (
-                    <th key={col}>{col}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {records.slice(0, 10).map((row, idx) => (
-                  <tr key={idx}>
-                    {columns.map((col) => (
-                      <td key={col}>{row[col] !== null && row[col] !== undefined ? String(row[col]) : "—"}</td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              {records.length > 0 ? (
+                <div className="pipeline-preview-table-wrapper">
+                  <table className="cleaned-customer-table" style={{ width: "100%" }}>
+                    <thead>
+                      <tr>
+                        {columns.map((col) => (
+                          <th key={col}>{col}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {records.slice(0, 50).map((row, idx) => (
+                        <tr key={idx}>
+                          {columns.map((col) => (
+                            <td key={col}>
+                              {row[col] !== null && row[col] !== undefined ? (
+                                String(row[col])
+                              ) : (
+                                <span className="pipeline-null-badge">null</span>
+                              )}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div style={{ padding: "30px", textAlign: "center", color: "#94a3b8", background: "#f8fafc", borderRadius: "8px" }}>
+                  No output records available. {isFailed ? "Pipeline execution halted before generating final destination dataset." : "Execution produced 0 rows."}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 2: VIEW ERROR */}
+          {activeTab === "error" && (
+            <div>
+              {isFailed ? (
+                <div className="pipeline-error-panel">
+                  <div className="pipeline-error-header">
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <AlertTriangle size={18} color="#dc2626" />
+                      <strong style={{ color: "#991b1b", fontSize: "14px" }}>
+                        Pipeline Execution Halted on Error
+                      </strong>
+                    </div>
+                    {failingStep && (
+                      <span className="pipeline-error-step-badge">
+                        Failed at Step #{failingStep.step_order}: {failingStep.step_name} ({failingStep.step_type})
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="pipeline-error-message">
+                    {executionResult.error_message || failingStep?.error || "Unknown execution error occurred."}
+                  </div>
+
+                  {failingStep?.warnings?.length > 0 && (
+                    <div style={{ marginTop: "8px", fontSize: "12px", color: "#b45309" }}>
+                      <strong>Step Warnings: </strong>
+                      {failingStep.warnings.join("; ")}
+                    </div>
+                  )}
+
+                  <div style={{ marginTop: "12px", fontSize: "12px", color: "#64748b" }}>
+                    <strong>Safe Halt Guarantee: </strong>
+                    Execution stopped sequentially at the failing step. Subsequent steps were skipped to prevent partial
+                    data corruption. You can adjust the step configuration in the Workbench and click <strong>Retry Execution</strong>.
+                  </div>
+                </div>
+              ) : (
+                <div style={{ padding: "28px", textAlign: "center", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: "8px" }}>
+                  <CheckCircle2 size={32} color="#16a34a" style={{ margin: "0 auto 8px" }} />
+                  <h4 style={{ margin: "0 0 4px", color: "#166534" }}>Zero Errors Detected</h4>
+                  <p style={{ margin: 0, color: "#15803d", fontSize: "13px" }}>
+                    All configured pipeline steps executed cleanly and satisfied data criteria.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 3: VIEW LOGS */}
+          {activeTab === "logs" && (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                <span style={{ fontSize: "13px", color: "#475569" }}>
+                  Structured Execution Logs ({logs.length} entries)
+                </span>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    style={{ padding: "4px 10px", fontSize: "12px" }}
+                    onClick={loadLogs}
+                    disabled={loadingLogs}
+                  >
+                    <RefreshCw size={12} className={loadingLogs ? "spin" : ""} /> Refresh Logs
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    style={{ padding: "4px 10px", fontSize: "12px" }}
+                    onClick={handleCopyLogs}
+                    disabled={logs.length === 0}
+                  >
+                    {copiedLogs ? <Check size={12} /> : <Copy size={12} />} {copiedLogs ? "Copied!" : "Copy Logs"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="pipeline-log-terminal">
+                {logs.length > 0 ? (
+                  logs.map((line, idx) => {
+                    const isErr = line.includes("ERROR:");
+                    const isWarn = line.includes("WARN:");
+                    const isInfo = line.includes("INFO:");
+                    const cls = isErr ? "error" : isWarn ? "warn" : isInfo ? "info" : "";
+                    return (
+                      <div key={idx} className={`pipeline-log-line ${cls}`}>
+                        {line}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div style={{ color: "#64748b" }}>
+                    {loadingLogs ? "Loading execution logs from server..." : "No logs available for this run."}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 4: STEP TELEMETRY */}
+          {activeTab === "steps" && (
+            <div>
+              <h4 style={{ margin: "0 0 8px", fontSize: "14px", fontWeight: "600", color: "#334155" }}>
+                Step Execution Telemetry ({telemetry.length} steps recorded)
+              </h4>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                {telemetry.map((t, idx) => {
+                  const stepFailed = t.status === "failed";
+                  return (
+                    <div
+                      key={idx}
+                      className="pipeline-step-telemetry-row"
+                      style={stepFailed ? { borderColor: "#fca5a5", background: "#fef2f2" } : {}}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <span style={{ fontSize: "12px", fontWeight: "600", color: "#64748b" }}>#{idx + 1}</span>
+                        <div>
+                          <strong style={{ fontSize: "13px", color: stepFailed ? "#b91c1c" : "#0f172a" }}>
+                            {t.step_name}
+                          </strong>
+                          <span className="pipeline-step-badge" style={{ marginLeft: "8px" }}>
+                            {t.type}
+                          </span>
+                          {stepFailed && (
+                            <span style={{ marginLeft: "6px", color: "#dc2626", fontSize: "11px", fontWeight: "700" }}>
+                              [FAILED]
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "16px", fontSize: "12px" }}>
+                        <span>{t.duration_ms} ms</span>
+                        <span>
+                          {t.rows_before} → {t.rows_after} rows
+                        </span>
+                        <span className={t.row_delta < 0 ? "pipeline-delta-negative" : "pipeline-delta-positive"}>
+                          {t.row_delta > 0 ? `+${t.row_delta}` : t.row_delta}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
-        <div className="pipeline-modal-footer">
-          <button type="button" className="secondary-button" onClick={onClose}>Done</button>
+        {/* MODAL FOOTER WITH RETRY AND EXPORT ACTIONS */}
+        <div className="pipeline-modal-footer" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <button
+              type="button"
+              className="primary-button datamedic-load-mysql-button"
+              onClick={() => onRetry && onRetry(executionResult.run_id)}
+              disabled={isRetrying}
+            >
+              <RefreshCw size={14} className={isRetrying ? "spin" : ""} />
+              {isRetrying ? "Retrying..." : "Retry Execution"}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={handleExportCSV}
+              disabled={records.length === 0}
+            >
+              <Download size={14} /> Export Results
+            </button>
+          </div>
+          <button type="button" className="secondary-button" onClick={onClose}>
+            Done
+          </button>
         </div>
       </div>
     </div>
@@ -2152,11 +2488,60 @@ function PipelineWorkbenchPage({
       const data = await res.json();
       setExecutionResult(data);
       setExecModalOpen(true);
-      setBannerMessage(data.destination_status || "Pipeline executed successfully.");
+      if (data.status === "failed") {
+        setBannerMessage(`Execution halted: ${data.error_message || data.destination_status || "Step error encountered."}`);
+      } else {
+        setBannerMessage(data.destination_status || "Pipeline executed successfully.");
+      }
       loadSavedPipelines();
     } catch (err) {
       console.error(err);
       setBannerMessage(`Execution failed: ${err.message}`);
+    } finally {
+      setIsExecuting(false);
+    }
+  };
+
+  const handleRetryExecution = async (runId) => {
+    setIsExecuting(true);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/runs/${runId || executionResult?.run_id}/retry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pipeline_id: pipelineId || undefined,
+          pipeline: {
+            id: pipelineId || undefined,
+            name,
+            description,
+            input_source: { type: inputSource },
+            steps,
+            destination,
+            error_policy: errorPolicy,
+            version,
+            status: "saved",
+          },
+          records: result?.records || null,
+        }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || "Retry execution failed");
+      }
+
+      const data = await res.json();
+      setExecutionResult(data);
+      setExecModalOpen(true);
+      if (data.status === "failed") {
+        setBannerMessage(`Retry run stopped on error: ${data.error_message || data.destination_status || "Execution failed"}`);
+      } else {
+        setBannerMessage(data.destination_status || `Pipeline rerun completed with status: ${data.status}`);
+      }
+      loadSavedPipelines();
+    } catch (err) {
+      console.error(err);
+      setBannerMessage(`Retry failed: ${err.message}`);
     } finally {
       setIsExecuting(false);
     }
@@ -2362,6 +2747,16 @@ function PipelineWorkbenchPage({
           </div>
 
           <div className="pipeline-actions-right">
+            {executionResult && (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setExecModalOpen(true)}
+                title="View results of previous pipeline run"
+              >
+                <Activity size={15} /> Run #{executionResult.run_id ? executionResult.run_id.slice(-6) : "Last"}: {executionResult.status?.toUpperCase()}
+              </button>
+            )}
             <button
               type="button"
               className="primary-button datamedic-load-mysql-button"
@@ -2512,12 +2907,14 @@ function PipelineWorkbenchPage({
         isLoading={isPreviewLoading}
       />
 
-      {/* PIPELINE EXECUTION MODAL (STAGE 3) */}
+      {/* PIPELINE EXECUTION MODAL (STAGE 5) */}
       <PipelineExecutionModal
         isOpen={execModalOpen}
         onClose={() => setExecModalOpen(false)}
         executionResult={executionResult}
         pipelineName={name}
+        onRetry={handleRetryExecution}
+        isRetrying={isExecuting}
       />
     </div>
   );

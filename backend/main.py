@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from io import BytesIO, StringIO
 from typing import Any, Dict, List, Optional
 
@@ -14,9 +15,12 @@ from pydantic import BaseModel
 from backend.data_quality import analyze_data
 from backend.database import (
     check_connection,
+    create_pipeline_run,
     delete_pipeline,
+    finish_pipeline_run,
     get_connection,
     get_pipeline,
+    get_pipeline_run_details,
     get_public_tables,
     init_db,
     list_pipeline_runs,
@@ -425,6 +429,73 @@ def get_pipeline_runs(pipeline_id: Optional[str] = None, limit: int = 50):
         raise HTTPException(status_code=500, detail=f"Failed to load run history: {e}")
 
 
+@app.get("/pipelines/runs/{run_id}")
+def get_single_run(run_id: str):
+    """Retrieve full execution metadata and step-by-step metrics for a run."""
+    run = get_pipeline_run_details(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Execution run not found.")
+    return {"status": "success", "run": run}
+
+
+@app.get("/pipelines/runs/{run_id}/logs")
+def get_run_logs(run_id: str):
+    """Generate structured execution logs for a run."""
+    run = get_pipeline_run_details(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Execution run not found.")
+
+    logs = []
+    logs.append(f"[{run['started_at'] or 'START'}] INFO: Pipeline '{run['pipeline_name']}' execution initialized (Run ID: {run['run_id']})")
+    logs.append(f"[{run['started_at'] or 'START'}] INFO: Input source dataset verified with {run['input_rows']} records")
+
+    for s in run.get("steps", []):
+        status_tag = "ERROR" if s["status"] == "failed" else "WARN" if s["status"] == "warning" else "INFO"
+        logs.append(
+            f"[{run['started_at'] or 'EXEC'}] {status_tag}: Step {s['step_order']} '{s['step_name']}' ({s['type']}) "
+            f"[{s['status'].upper()}] - Duration: {s['duration_ms']}ms, In: {s['rows_before']}, Out: {s['rows_after']} (Delta: {s['row_delta']})"
+        )
+        for w in s.get("warnings", []):
+            logs.append(f"[{run['started_at'] or 'EXEC'}] WARN: Step {s['step_order']} warning: {w}")
+        if s.get("error"):
+            logs.append(f"[{run['started_at'] or 'EXEC'}] ERROR: Step {s['step_order']} failed with error: {s['error']}")
+
+    if run.get("destination_status"):
+        logs.append(f"[{run['completed_at'] or 'END'}] INFO: Destination write status: {run['destination_status']}")
+    if run.get("error_message"):
+        logs.append(f"[{run['completed_at'] or 'END'}] ERROR: Destination error: {run['error_message']}")
+
+    logs.append(f"[{run['completed_at'] or 'END'}] INFO: Overall run finished with status '{run['status'].upper()}' in {run['duration_ms']}ms")
+
+    return {
+        "status": "success",
+        "run_id": run_id,
+        "logs": logs,
+        "text": "\n".join(logs),
+    }
+
+
+@app.post("/pipelines/runs/{run_id}/retry")
+def retry_pipeline_run(run_id: str, payload: Optional[PipelineExecutionPayload] = None):
+    """Retry a pipeline run by creating a new execution record."""
+    run = get_pipeline_run_details(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Execution run not found.")
+
+    if payload and (payload.pipeline or payload.pipeline_id):
+        return execute_pipeline_workflow(payload)
+
+    pipeline_id = run.get("pipeline_id")
+    pipeline_def = get_pipeline(pipeline_id) if pipeline_id else None
+
+    # Trigger execution
+    return execute_pipeline_workflow(PipelineExecutionPayload(
+        pipeline_id=pipeline_id,
+        pipeline=PipelinePayload(**pipeline_def) if pipeline_def else None,
+    ))
+
+
+
 @app.get("/pipelines/{pipeline_id}")
 def get_pipeline_by_id(pipeline_id: str):
     """Retrieve a specific pipeline by ID."""
@@ -750,15 +821,38 @@ def execute_pipeline_workflow(payload: PipelineExecutionPayload):
     df = _get_base_dataframe(payload.records)
     input_rows = len(df)
 
-    # 3. Execute transformations
+    # 3. Create persistent initial run record with status 'running'
+    try:
+        run_id = create_pipeline_run(
+            pipeline_id=pipeline_id,
+            pipeline_name=pipeline_name,
+            input_filename="dataset_input",
+            input_rows=input_rows,
+        )
+    except Exception as run_init_err:
+        print(f"Warning: Failed to create initial run record: {run_init_err}")
+        run_id = f"run_{int(time.time() * 1000)}"
+
+    # 4. Execute transformations
     try:
         final_df, step_telemetry, summary = execute_pipeline_transformations(
             df, steps, error_policy=error_policy
         )
     except Exception as e:
+        # Mark run failed in PostgreSQL
+        finish_pipeline_run(run_id, {
+            "status": "failed",
+            "duration_ms": 0,
+            "output_rows": 0,
+            "completed_steps": 0,
+            "failed_steps": len(steps),
+            "destination_status": "Execution failed before destination write",
+            "destination_table": destination.get("table", "customers"),
+            "error_message": str(e),
+        }, [])
         raise HTTPException(status_code=500, detail=f"Pipeline execution engine failed: {e}")
 
-    # 4. Handle destination persistence
+    # 5. Handle destination persistence
     destination_status = "skipped"
     destination_table = destination.get("table", "customers")
     records_loaded = 0
@@ -799,10 +893,10 @@ def execute_pipeline_workflow(payload: PipelineExecutionPayload):
             dest_error = str(dest_err)
             destination_status = f"PostgreSQL load failed: {dest_error}"
 
-    # 5. Persist run telemetry in PostgreSQL
+    # 6. Finalize execution run lifecycle status
     completed_steps = sum(1 for s in step_telemetry if s.get("status") in ("success", "warning"))
     failed_steps = sum(1 for s in step_telemetry if s.get("status") == "failed")
-    run_status = "success" if (summary["status"] == "success" and not dest_error) else "failed"
+    run_status = "completed" if (summary["status"] == "success" and not dest_error and failed_steps == 0) else "failed"
 
     run_record = {
         "pipeline_id": pipeline_id,
@@ -816,22 +910,51 @@ def execute_pipeline_workflow(payload: PipelineExecutionPayload):
         "failed_steps": failed_steps,
         "destination_status": destination_status,
         "destination_table": destination_table,
-        "error_message": dest_error,
+        "error_message": dest_error or next((s.get("error") for s in step_telemetry if s.get("error")), None),
     }
 
     try:
-        run_id = record_pipeline_run(run_record, step_telemetry)
+        finish_pipeline_run(run_id, run_record, step_telemetry)
     except Exception as run_err:
         print(f"Failed to record run telemetry: {run_err}")
-        run_id = "unknown"
+
+    # Identify failing step if any
+    failing_step = None
+    for idx, s in enumerate(step_telemetry):
+        if s.get("status") == "failed":
+            failing_step = {
+                "step_index": idx,
+                "step_order": idx + 1,
+                "step_id": s.get("step_id") or f"step_{idx+1}",
+                "step_name": s.get("step_name") or f"Step {idx+1}",
+                "step_type": s.get("type"),
+                "error": s.get("error"),
+            }
+            break
+
+    run_details = None
+    try:
+        run_details = get_pipeline_run_details(run_id)
+    except Exception as fetch_err:
+        print(f"Failed to fetch run details: {fetch_err}")
 
     return {
         "status": run_status,
         "run_id": run_id,
+        "started_at": run_details.get("started_at") if run_details else None,
+        "completed_at": run_details.get("completed_at") if run_details else None,
+        "duration_ms": run_record["duration_ms"],
+        "input_rows": input_rows,
+        "output_rows": len(final_df),
+        "completed_steps": completed_steps,
+        "failed_steps": failed_steps,
+        "destination_status": destination_status,
+        "destination_table": destination_table,
+        "records_loaded": records_loaded,
+        "failing_step": failing_step,
+        "error_message": run_record["error_message"],
         "summary": summary,
         "step_telemetry": step_telemetry,
-        "destination_status": destination_status,
-        "records_loaded": records_loaded,
         "records": dataframe_to_records(final_df.head(100)),
         "columns": list(final_df.columns),
     }

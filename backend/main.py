@@ -18,10 +18,12 @@ from backend.schema_detection import detect_schema_changes
 from backend.database import (
     accept_pipeline_schema,
     check_connection,
+    compare_pipeline_runs,
     create_data_contract,
     create_pipeline_run,
     delete_data_contract,
     delete_pipeline,
+    delete_pipeline_run,
     duplicate_pipeline,
     finish_pipeline_run,
     get_connection,
@@ -577,13 +579,43 @@ def get_all_pipelines():
 
 
 @app.get("/pipelines/runs")
-def get_pipeline_runs(pipeline_id: Optional[str] = None, limit: int = 50):
-    """Retrieve execution run history and telemetry from PostgreSQL."""
+def get_pipeline_runs(
+    pipeline_id: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    sort: Optional[str] = "desc",
+    limit: int = 100,
+):
+    """Retrieve execution run history and telemetry from PostgreSQL with search and filters."""
     try:
-        runs = list_pipeline_runs(pipeline_id=pipeline_id, limit=limit)
-        return {"status": "success", "runs": runs}
+        runs = list_pipeline_runs(
+            pipeline_id=pipeline_id,
+            status=status,
+            search=search,
+            date_from=date_from,
+            date_to=date_to,
+            sort=sort or "desc",
+            limit=limit,
+        )
+        return {"status": "success", "runs": runs, "count": len(runs)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load run history: {e}")
+
+
+@app.get("/pipelines/runs/compare")
+def compare_runs_endpoint(run_id_1: str, run_id_2: str):
+    """Compare two execution runs side-by-side."""
+    try:
+        res = compare_pipeline_runs(run_id_1, run_id_2)
+        if not res:
+            raise HTTPException(status_code=404, detail="One or both runs not found for comparison.")
+        return {"status": "success", "comparison": res}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compare runs: {e}")
 
 
 @app.get("/pipelines/runs/{run_id}")
@@ -632,24 +664,84 @@ def get_run_logs(run_id: str):
     }
 
 
-@app.post("/pipelines/runs/{run_id}/retry")
-def retry_pipeline_run(run_id: str, payload: Optional[PipelineExecutionPayload] = None):
-    """Retry a pipeline run by creating a new execution record."""
+@app.get("/pipelines/runs/{run_id}/output")
+def get_run_output(run_id: str, limit: int = 100):
+    """Retrieve output records from destination table for a given run."""
     run = get_pipeline_run_details(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Execution run not found.")
 
-    if payload and (payload.pipeline or payload.pipeline_id):
-        return execute_pipeline_workflow(payload)
+    table_name = run.get("destination_table") or "customers"
+    try:
+        prev = preview_table(table_name, limit=limit)
+        return {
+            "status": "success",
+            "run_id": run_id,
+            "destination_table": table_name,
+            "output_rows": run.get("output_rows", 0),
+            "columns": prev.get("columns", []),
+            "records": prev.get("records") or prev.get("data") or [],
+        }
+    except Exception as e:
+        return {
+            "status": "partial",
+            "run_id": run_id,
+            "destination_table": table_name,
+            "output_rows": run.get("output_rows", 0),
+            "columns": [],
+            "records": [],
+            "message": f"Output records preview unavailable: {e}",
+        }
+
+
+@app.post("/pipelines/runs/{run_id}/retry")
+def retry_pipeline_run(run_id: str, payload: Optional[PipelineExecutionPayload] = None):
+    """Retry a pipeline run by creating a new execution record."""
+    return replay_pipeline_execution(run_id, payload)
+
+
+@app.post("/pipelines/runs/{run_id}/replay")
+def replay_pipeline_execution(run_id: str, payload: Optional[PipelineExecutionPayload] = None):
+    """
+    Replay an execution run creating a fresh execution record.
+    Preserves pipeline configuration and creates a new execution lifecycle.
+    """
+    run = get_pipeline_run_details(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Execution run not found.")
 
     pipeline_id = run.get("pipeline_id")
-    pipeline_def = get_pipeline(pipeline_id) if pipeline_id else None
+    pipeline_def = None
+    if payload and payload.pipeline:
+        pipeline_def = payload.pipeline.dict()
+    elif pipeline_id:
+        pipeline_def = get_pipeline(pipeline_id)
 
-    # Trigger execution
-    return execute_pipeline_workflow(PipelineExecutionPayload(
+    if not pipeline_def:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot replay: original pipeline configuration for run '{run_id}' was not retained.",
+        )
+
+    records = payload.records if payload and payload.records is not None else None
+    exec_payload = PipelineExecutionPayload(
         pipeline_id=pipeline_id,
-        pipeline=PipelinePayload(**pipeline_def) if pipeline_def else None,
-    ))
+        pipeline=PipelinePayload(**pipeline_def),
+        records=records,
+    )
+    result = execute_pipeline_workflow(exec_payload)
+    result["replayed_from_run_id"] = run_id
+    result["input_file_used"] = run.get("input_filename", "dataset_input")
+    return result
+
+
+@app.delete("/pipelines/runs/{run_id}")
+def delete_run_endpoint(run_id: str):
+    """Delete an execution run record from PostgreSQL."""
+    deleted = delete_pipeline_run(run_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Execution run not found.")
+    return {"status": "success", "message": f"Run '{run_id}' deleted."}
 
 
 
@@ -1373,7 +1465,10 @@ def execute_pipeline_workflow(payload: PipelineExecutionPayload):
     records_loaded = 0
     dest_error = None
 
-    if destination.get("type") == "postgres" and not final_df.empty:
+    has_failed = any(s.get("status") == "failed" for s in step_telemetry) or summary.get("status") == "failed"
+    if has_failed:
+        destination_status = "Skipped due to pipeline transformation failure"
+    elif destination.get("type") == "postgres" and not final_df.empty:
         try:
             write_res = write_dataframe_to_postgres(
                 df=final_df,

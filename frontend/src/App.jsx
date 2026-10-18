@@ -37,6 +37,7 @@ import {
   ChevronRight,
   Folder,
   GitCompare,
+  FileText,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -77,6 +78,11 @@ const NAV_ITEMS = [
         id: "saved-pipelines",
         label: "Saved Pipelines",
         icon: Sliders,
+      },
+      {
+        id: "run-history",
+        label: "Run History",
+        icon: Clock,
       },
       {
         id: "upload",
@@ -334,6 +340,10 @@ function App() {
         title: "Saved Pipelines",
         subtitle: "Manage, version, duplicate, and restore ETL data pipelines",
       },
+      "run-history": {
+        title: "Run History & Replay",
+        subtitle: "Audit execution telemetry, inspect step-level metrics, and replay ETL pipelines",
+      },
       postgres: {
         title: "Data Sources",
         subtitle: "Inspect PostgreSQL connection status, metadata, and browse relational tables",
@@ -489,6 +499,7 @@ function App() {
             initialPipelineId={workbenchPipelineId}
             onPipelineLoaded={() => setWorkbenchPipelineId(null)}
             onBrowsePipelines={() => setActivePage("saved-pipelines")}
+            onBrowseHistory={() => setActivePage("run-history")}
           />
         )}
 
@@ -500,6 +511,16 @@ function App() {
             }}
             onNewPipeline={() => {
               setWorkbenchPipelineId("NEW");
+              setActivePage("workbench");
+            }}
+          />
+        )}
+
+        {activePage === "run-history" && (
+          <RunHistoryPage
+            records={result?.records}
+            onOpenPipelineInWorkbench={(pId) => {
+              setWorkbenchPipelineId(pId);
               setActivePage("workbench");
             }}
           />
@@ -3017,6 +3038,1012 @@ function SavedPipelinesPage({ onOpenPipeline, onNewPipeline }) {
 
 
 /* =========================================================
+   STAGE 10: RUN HISTORY & EXECUTION REPLAY PAGE (FEATURE 9)
+========================================================= */
+
+function RunHistoryPage({ records = null, onOpenPipelineInWorkbench }) {
+  const [runs, setRuns] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [dateFilter, setDateFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("desc");
+  const [banner, setBanner] = useState(null);
+  const [selectedRunIds, setSelectedRunIds] = useState([]);
+
+  // Modals state
+  const [detailsRun, setDetailsRun] = useState(null);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [logsRun, setLogsRun] = useState(null);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [outputRun, setOutputRun] = useState(null);
+  const [outputLoading, setOutputLoading] = useState(false);
+  const [compareData, setCompareData] = useState(null);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [replayModalRun, setReplayModalRun] = useState(null);
+  const [isReplaying, setIsReplaying] = useState(false);
+
+  const fetchRuns = async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (statusFilter && statusFilter !== "all") params.append("status", statusFilter);
+      if (searchTerm.trim()) params.append("search", searchTerm.trim());
+      params.append("sort", sortBy);
+      params.append("limit", "100");
+
+      if (dateFilter !== "all") {
+        const now = new Date();
+        if (dateFilter === "today") {
+          const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+          params.append("date_from", startOfDay);
+        } else if (dateFilter === "7days") {
+          const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+          params.append("date_from", sevenDaysAgo);
+        } else if (dateFilter === "30days") {
+          const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+          params.append("date_from", thirtyDaysAgo);
+        }
+      }
+
+      const res = await fetch(`${API_URL}/pipelines/runs?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        setRuns(data.runs || []);
+      } else {
+        throw new Error("Failed to load run history from PostgreSQL.");
+      }
+    } catch (err) {
+      console.error(err);
+      setBanner({ type: "error", text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchRuns();
+  }, [statusFilter, dateFilter, sortBy]);
+
+  const handleSearchSubmit = (e) => {
+    e.preventDefault();
+    fetchRuns();
+  };
+
+  // Open Details Modal
+  const handleOpenDetails = async (runId) => {
+    setDetailsLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/runs/${runId}`);
+      if (!res.ok) throw new Error("Failed to fetch run details.");
+      const data = await res.json();
+      setDetailsRun(data.run);
+    } catch (err) {
+      setBanner({ type: "error", text: err.message });
+    } finally {
+      setDetailsLoading(false);
+    }
+  };
+
+  // Open Logs Modal
+  const handleOpenLogs = async (runId) => {
+    setLogsLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/runs/${runId}/logs`);
+      if (!res.ok) throw new Error("Failed to fetch execution logs.");
+      const data = await res.json();
+      setLogsRun(data);
+    } catch (err) {
+      setBanner({ type: "error", text: err.message });
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  // Open Output Modal
+  const handleOpenOutput = async (runId) => {
+    setOutputLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/runs/${runId}/output`);
+      if (!res.ok) throw new Error("Failed to fetch destination output.");
+      const data = await res.json();
+      setOutputRun(data);
+    } catch (err) {
+      setBanner({ type: "error", text: err.message });
+    } finally {
+      setOutputLoading(false);
+    }
+  };
+
+  // Download Output Records as CSV
+  const handleDownloadOutput = async (run) => {
+    try {
+      const res = await fetch(`${API_URL}/pipelines/runs/${run.run_id}/output?limit=5000`);
+      if (!res.ok) throw new Error("Failed to fetch output for download.");
+      const data = await res.json();
+      const outputRows = data.records || [];
+      if (outputRows.length === 0) {
+        setBanner({ type: "warning", text: `No output records found for Run ${run.run_id}.` });
+        return;
+      }
+      const headers = Object.keys(outputRows[0]);
+      const csvLines = [headers.join(",")];
+      outputRows.forEach((row) => {
+        csvLines.push(headers.map((h) => JSON.stringify(row[h] ?? "")).join(","));
+      });
+      const blob = new Blob([csvLines.join("\n")], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `output_${run.pipeline_name || "run"}_${run.run_id}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setBanner({ type: "error", text: err.message });
+    }
+  };
+
+  // Replay Run
+  const handleConfirmReplay = async () => {
+    if (!replayModalRun) return;
+    setIsReplaying(true);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/runs/${replayModalRun.run_id}/replay`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          records: records || null,
+        }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || "Replay execution failed.");
+      }
+
+      const data = await res.json();
+      const newRunId = data.run_id || data.run?.run_id || "New Run";
+      const statusLabel = (data.status || data.run?.status || "completed").toUpperCase();
+      setBanner({
+        type: "success",
+        text: `Replay complete! Fresh execution record #${newRunId.slice(-6)} recorded in PostgreSQL (${statusLabel}).`,
+      });
+      setReplayModalRun(null);
+      fetchRuns();
+    } catch (err) {
+      setBanner({ type: "error", text: err.message });
+    } finally {
+      setIsReplaying(false);
+    }
+  };
+
+  // Compare 2 Selected Runs
+  const handleCompareSelected = async () => {
+    if (selectedRunIds.length !== 2) return;
+    setCompareLoading(true);
+    try {
+      const res = await fetch(
+        `${API_URL}/pipelines/runs/compare?run_id_1=${selectedRunIds[0]}&run_id_2=${selectedRunIds[1]}`
+      );
+      if (!res.ok) throw new Error("Failed to compare runs.");
+      const data = await res.json();
+      setCompareData(data.comparison);
+    } catch (err) {
+      setBanner({ type: "error", text: err.message });
+    } finally {
+      setCompareLoading(false);
+    }
+  };
+
+  // Delete Run
+  const handleDeleteRun = async (runId) => {
+    if (!confirm(`Are you sure you want to delete Run ${runId}? This will remove its step telemetry from PostgreSQL.`)) return;
+    try {
+      const res = await fetch(`${API_URL}/pipelines/runs/${runId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete run.");
+      setBanner({ type: "success", text: `Run ${runId} deleted successfully.` });
+      setSelectedRunIds((prev) => prev.filter((id) => id !== runId));
+      fetchRuns();
+    } catch (err) {
+      setBanner({ type: "error", text: err.message });
+    }
+  };
+
+  const toggleSelectRun = (runId) => {
+    setSelectedRunIds((prev) => {
+      if (prev.includes(runId)) {
+        return prev.filter((id) => id !== runId);
+      }
+      if (prev.length >= 2) {
+        return [prev[1], runId];
+      }
+      return [...prev, runId];
+    });
+  };
+
+  // Metrics
+  const totalRuns = runs.length;
+  const successRuns = runs.filter((r) => r.status === "completed").length;
+  const failedRuns = runs.filter((r) => r.status === "failed").length;
+  const avgDuration = Math.round(runs.reduce((acc, r) => acc + (r.duration_ms || 0), 0) / (totalRuns || 1));
+  const totalRowsProcessed = runs.reduce((acc, r) => acc + (r.output_rows || 0), 0);
+
+  return (
+    <div className="tab-page-container">
+      {/* KPI METRICS ROW */}
+      <div className="run-stats-grid">
+        <div className="run-stat-card">
+          <div className="run-stat-icon total">
+            <Activity size={22} />
+          </div>
+          <div className="run-stat-info">
+            <span>Total Runs</span>
+            <strong>{totalRuns}</strong>
+          </div>
+        </div>
+
+        <div className="run-stat-card">
+          <div className="run-stat-icon success">
+            <CheckCircle2 size={22} />
+          </div>
+          <div className="run-stat-info">
+            <span>Successful</span>
+            <strong>{successRuns}</strong>
+          </div>
+        </div>
+
+        <div className="run-stat-card">
+          <div className="run-stat-icon failed">
+            <XCircle size={22} />
+          </div>
+          <div className="run-stat-info">
+            <span>Failed</span>
+            <strong>{failedRuns}</strong>
+          </div>
+        </div>
+
+        <div className="run-stat-card">
+          <div className="run-stat-icon duration">
+            <Clock size={22} />
+          </div>
+          <div className="run-stat-info">
+            <span>Avg Duration</span>
+            <strong>{avgDuration} ms</strong>
+          </div>
+        </div>
+
+        <div className="run-stat-card">
+          <div className="run-stat-icon rows">
+            <Database size={22} />
+          </div>
+          <div className="run-stat-info">
+            <span>Rows Loaded</span>
+            <strong>{totalRowsProcessed.toLocaleString()}</strong>
+          </div>
+        </div>
+      </div>
+
+      {banner && (
+        <div className={`contract-banner-summary ${banner.type}`} style={{ marginBottom: "16px" }}>
+          {banner.type === "success" && <CheckCircle2 size={16} />}
+          {banner.type === "error" && <XCircle size={16} />}
+          {banner.type === "warning" && <AlertTriangle size={16} />}
+          <span>{banner.text}</span>
+        </div>
+      )}
+
+      {/* SEARCH AND FILTERS BAR */}
+      <div className="run-filters-bar">
+        <div className="run-filters-left">
+          <form onSubmit={handleSearchSubmit} className="run-search-box">
+            <Search size={15} />
+            <input
+              type="text"
+              placeholder="Search by pipeline name or run ID..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </form>
+
+          <select
+            className="run-filter-select"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+          >
+            <option value="all">All Statuses</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+            <option value="running">Running</option>
+          </select>
+
+          <select
+            className="run-filter-select"
+            value={dateFilter}
+            onChange={(e) => setDateFilter(e.target.value)}
+          >
+            <option value="all">All Time</option>
+            <option value="today">Today</option>
+            <option value="7days">Last 7 Days</option>
+            <option value="30days">Last 30 Days</option>
+          </select>
+
+          <select
+            className="run-filter-select"
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+          >
+            <option value="desc">Newest First</option>
+            <option value="asc">Oldest First</option>
+          </select>
+        </div>
+
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={fetchRuns}
+            disabled={loading}
+            title="Refresh execution run history from PostgreSQL"
+          >
+            <RefreshCw size={14} className={loading ? "spin" : ""} /> Refresh
+          </button>
+
+          <button
+            type="button"
+            className="primary-button"
+            style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+            onClick={handleCompareSelected}
+            disabled={selectedRunIds.length !== 2 || compareLoading}
+            title={selectedRunIds.length !== 2 ? "Select exactly 2 runs in the table to compare" : "Compare selected runs"}
+          >
+            <GitCompare size={14} /> Compare Runs ({selectedRunIds.length}/2)
+          </button>
+        </div>
+      </div>
+
+      {/* MAIN RUN HISTORY TABLE */}
+      <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
+        {loading && (
+          <div style={{ textAlign: "center", padding: "40px", color: "#64748b" }}>
+            <RefreshCw size={24} className="spin" style={{ marginBottom: "8px", color: "#2563eb" }} />
+            <p style={{ margin: 0 }}>Loading execution history from PostgreSQL...</p>
+          </div>
+        )}
+
+        {!loading && runs.length === 0 && (
+          <div style={{ textAlign: "center", padding: "48px 20px", color: "#64748b" }}>
+            <Activity size={36} style={{ marginBottom: "12px", color: "#94a3b8" }} />
+            <h4 style={{ margin: "0 0 6px 0", color: "#334155" }}>No execution runs found</h4>
+            <p style={{ margin: 0, fontSize: "13px" }}>
+              Run pipelines in the Pipeline Workbench to record execution telemetry and logs in PostgreSQL.
+            </p>
+          </div>
+        )}
+
+        {!loading && runs.length > 0 && (
+          <div style={{ overflowX: "auto" }}>
+            <table className="pipeline-table" style={{ width: "100%", margin: 0 }}>
+              <thead>
+                <tr>
+                  <th style={{ width: "36px", textAlign: "center" }}>
+                    <span style={{ fontSize: "11px", color: "#64748b" }}>Diff</span>
+                  </th>
+                  <th>Run ID</th>
+                  <th>Pipeline Name</th>
+                  <th>Status</th>
+                  <th>Started Time</th>
+                  <th>Duration</th>
+                  <th>Rows (In → Out)</th>
+                  <th>Destination Status</th>
+                  <th style={{ textAlign: "right" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((r) => {
+                  const isSelected = selectedRunIds.includes(r.run_id);
+                  return (
+                    <tr key={r.run_id} style={{ background: isSelected ? "#f0fdf4" : undefined }}>
+                      <td style={{ textAlign: "center" }}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelectRun(r.run_id)}
+                          title="Select to compare with another run"
+                        />
+                      </td>
+                      <td>
+                        <span className="run-id-badge" title={r.run_id}>
+                          {r.run_id.length > 14 ? r.run_id.slice(-10) : r.run_id}
+                        </span>
+                      </td>
+                      <td>
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          <strong>{r.pipeline_name}</strong>
+                          {r.pipeline_id && onOpenPipelineInWorkbench && (
+                            <button
+                              type="button"
+                              className="icon-button"
+                              style={{ padding: "2px 4px", fontSize: "11px" }}
+                              onClick={() => onOpenPipelineInWorkbench(r.pipeline_id)}
+                              title="Open pipeline in Workbench"
+                            >
+                              <GitBranch size={11} color="#2563eb" />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                      <td>
+                        <span className={`run-status-pill ${r.status}`}>
+                          {r.status === "completed" && <CheckCircle2 size={12} />}
+                          {r.status === "failed" && <XCircle size={12} />}
+                          {r.status === "running" && <Activity size={12} className="spin" />}
+                          {r.status}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: "12px", color: "#64748b" }}>
+                        {r.started_at ? new Date(r.started_at).toLocaleString() : "—"}
+                      </td>
+                      <td style={{ fontSize: "12px", fontWeight: 500 }}>
+                        {r.duration_ms != null ? `${r.duration_ms} ms` : "—"}
+                      </td>
+                      <td style={{ fontSize: "12px" }}>
+                        <span style={{ color: "#475569" }}>{r.input_rows ?? 0}</span>
+                        <ArrowRight size={11} style={{ margin: "0 4px", verticalAlign: "middle", color: "#94a3b8" }} />
+                        <span style={{ fontWeight: 600, color: "#1e293b" }}>{r.output_rows ?? 0}</span>
+                      </td>
+                      <td style={{ fontSize: "12px", maxWidth: "200px" }}>
+                        <span title={r.destination_status || r.error_message || ""}>
+                          {r.destination_status || r.error_message || "—"}
+                        </span>
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        <div className="run-actions-group" style={{ justifyContent: "flex-end" }}>
+                          <button
+                            type="button"
+                            className="run-action-btn"
+                            onClick={() => handleOpenDetails(r.run_id)}
+                            title="View full execution details and step metrics"
+                          >
+                            <Eye size={12} /> Details
+                          </button>
+                          <button
+                            type="button"
+                            className="run-action-btn"
+                            onClick={() => handleOpenLogs(r.run_id)}
+                            title="View execution log output"
+                          >
+                            <FileText size={12} /> Logs
+                          </button>
+                          <button
+                            type="button"
+                            className="run-action-btn"
+                            onClick={() => handleOpenOutput(r.run_id)}
+                            title="View output records preview"
+                          >
+                            <Database size={12} /> Output
+                          </button>
+                          <button
+                            type="button"
+                            className="run-action-btn"
+                            onClick={() => handleDownloadOutput(r)}
+                            title="Download destination output as CSV"
+                          >
+                            <Download size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            className="run-action-btn replay-btn"
+                            onClick={() => setReplayModalRun(r)}
+                            title="Replay this execution workflow"
+                          >
+                            <PlayCircle size={12} /> Replay
+                          </button>
+                          <button
+                            type="button"
+                            className="run-action-btn"
+                            onClick={() => handleDeleteRun(r.run_id)}
+                            title="Delete execution run record"
+                          >
+                            <Trash2 size={12} color="#94a3b8" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* DETAILS MODAL */}
+      {detailsRun && (
+        <div className="cleaned-customer-overlay" onClick={() => setDetailsRun(null)}>
+          <div
+            className="cleaned-customer-modal"
+            style={{ maxWidth: "860px", maxHeight: "90vh", display: "flex", flexDirection: "column" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="cleaned-customer-modal-header">
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <Activity size={20} color="#2563eb" />
+                <div>
+                  <h3 style={{ margin: 0 }}>Run Execution Details</h3>
+                  <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>
+                    Run ID: <strong>{detailsRun.run_id}</strong> — Pipeline: <strong>{detailsRun.pipeline_name}</strong>
+                  </p>
+                </div>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setDetailsRun(null)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="cleaned-customer-modal-content" style={{ padding: "16px 20px", overflowY: "auto", flex: 1 }}>
+              {/* Header Metric Cards */}
+              <div className="run-details-header-card">
+                <div className="run-details-metric-item">
+                  <span>Status</span>
+                  <strong>
+                    <span className={`run-status-pill ${detailsRun.status}`}>
+                      {detailsRun.status}
+                    </span>
+                  </strong>
+                </div>
+                <div className="run-details-metric-item">
+                  <span>Started At</span>
+                  <strong>{detailsRun.started_at ? new Date(detailsRun.started_at).toLocaleString() : "—"}</strong>
+                </div>
+                <div className="run-details-metric-item">
+                  <span>Duration</span>
+                  <strong>{detailsRun.duration_ms} ms</strong>
+                </div>
+                <div className="run-details-metric-item">
+                  <span>Input Rows</span>
+                  <strong>{detailsRun.input_rows}</strong>
+                </div>
+                <div className="run-details-metric-item">
+                  <span>Output Rows</span>
+                  <strong>{detailsRun.output_rows}</strong>
+                </div>
+                <div className="run-details-metric-item">
+                  <span>Destination</span>
+                  <strong>{detailsRun.destination_table || "PostgreSQL"}</strong>
+                </div>
+              </div>
+
+              {/* Error banner if failed */}
+              {detailsRun.error_message && (
+                <div
+                  className="contract-banner-summary danger"
+                  style={{ marginBottom: "16px", borderRadius: "6px" }}
+                >
+                  <XCircle size={16} />
+                  <div>
+                    <strong>Execution Error:</strong>
+                    <p style={{ margin: "2px 0 0 0", fontSize: "12px" }}>{detailsRun.error_message}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Step-by-Step Telemetry Table */}
+              <h4 style={{ margin: "0 0 10px 0", fontSize: "14px", color: "#1e293b" }}>
+                Step-by-Step Telemetry ({detailsRun.steps?.length || 0} steps)
+              </h4>
+              <table className="pipeline-table" style={{ width: "100%", fontSize: "12px" }}>
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Step Name</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Duration</th>
+                    <th>Rows In</th>
+                    <th>Rows Out</th>
+                    <th>Delta</th>
+                    <th>Warnings / Errors</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detailsRun.steps?.map((s) => (
+                    <tr key={s.step_id || s.step_order}>
+                      <td><strong>{s.step_order}</strong></td>
+                      <td><strong>{s.step_name}</strong></td>
+                      <td><span className="contract-rule-tag type">{s.type}</span></td>
+                      <td>
+                        <span className={`run-status-pill ${s.status}`} style={{ fontSize: "10px", padding: "2px 6px" }}>
+                          {s.status}
+                        </span>
+                      </td>
+                      <td>{s.duration_ms} ms</td>
+                      <td>{s.rows_before}</td>
+                      <td>{s.rows_after}</td>
+                      <td>
+                        <span style={{ fontWeight: 600, color: s.row_delta < 0 ? "#ef4444" : s.row_delta > 0 ? "#10b981" : "#64748b" }}>
+                          {s.row_delta > 0 ? `+${s.row_delta}` : s.row_delta}
+                        </span>
+                      </td>
+                      <td>
+                        {s.error && <span style={{ color: "#ef4444" }}>{s.error}</span>}
+                        {s.warnings?.length > 0 && (
+                          <span style={{ color: "#d97706" }}>{s.warnings.join("; ")}</span>
+                        )}
+                        {!s.error && (!s.warnings || s.warnings.length === 0) && (
+                          <span style={{ color: "#10b981" }}>Clean</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="cleaned-customer-modal-footer" style={{ display: "flex", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    setDetailsRun(null);
+                    handleOpenLogs(detailsRun.run_id);
+                  }}
+                >
+                  <FileText size={14} /> View Logs
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    setDetailsRun(null);
+                    handleOpenOutput(detailsRun.run_id);
+                  }}
+                >
+                  <Database size={14} /> View Output
+                </button>
+              </div>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button
+                  type="button"
+                  className="primary-button"
+                  style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+                  onClick={() => {
+                    const r = detailsRun;
+                    setDetailsRun(null);
+                    setReplayModalRun(r);
+                  }}
+                >
+                  <PlayCircle size={14} /> Replay Run
+                </button>
+                <button type="button" className="secondary-button" onClick={() => setDetailsRun(null)}>
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* LOGS MODAL */}
+      {logsRun && (
+        <div className="cleaned-customer-overlay" onClick={() => setLogsRun(null)}>
+          <div
+            className="cleaned-customer-modal"
+            style={{ maxWidth: "800px", maxHeight: "85vh", display: "flex", flexDirection: "column" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="cleaned-customer-modal-header">
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <FileText size={20} color="#2563eb" />
+                <div>
+                  <h3 style={{ margin: 0 }}>Execution Logs</h3>
+                  <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>
+                    Run ID: <strong>{logsRun.run_id}</strong>
+                  </p>
+                </div>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setLogsRun(null)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="cleaned-customer-modal-content" style={{ padding: "16px 20px", overflowY: "auto", flex: 1 }}>
+              <div className="run-logs-terminal">
+                {logsRun.logs?.map((line, idx) => {
+                  let tagClass = "INFO";
+                  if (line.includes("ERROR:")) tagClass = "ERROR";
+                  else if (line.includes("WARN:")) tagClass = "WARN";
+                  return (
+                    <div key={idx} className={`run-logs-line ${tagClass}`}>
+                      {line}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="cleaned-customer-modal-footer" style={{ display: "flex", justifyContent: "space-between" }}>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => {
+                  navigator.clipboard.writeText(logsRun.text || logsRun.logs?.join("\n") || "");
+                  setBanner({ type: "success", text: "Logs copied to clipboard!" });
+                }}
+              >
+                Copy Logs
+              </button>
+              <button type="button" className="secondary-button" onClick={() => setLogsRun(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* OUTPUT MODAL */}
+      {outputRun && (
+        <div className="cleaned-customer-overlay" onClick={() => setOutputRun(null)}>
+          <div
+            className="cleaned-customer-modal"
+            style={{ maxWidth: "900px", maxHeight: "85vh", display: "flex", flexDirection: "column" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="cleaned-customer-modal-header">
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <Database size={20} color="#2563eb" />
+                <div>
+                  <h3 style={{ margin: 0 }}>Destination Output Preview</h3>
+                  <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>
+                    Table: <strong>{outputRun.destination_table}</strong> ({outputRun.records?.length || 0} sample records)
+                  </p>
+                </div>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setOutputRun(null)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="cleaned-customer-modal-content" style={{ padding: "16px 20px", overflowY: "auto", flex: 1 }}>
+              {outputRun.records?.length === 0 ? (
+                <div style={{ textAlign: "center", padding: "30px", color: "#64748b" }}>
+                  <p>{outputRun.message || "No records found in destination table."}</p>
+                </div>
+              ) : (
+                <div style={{ overflowX: "auto" }}>
+                  <table className="pipeline-table" style={{ width: "100%", fontSize: "12px" }}>
+                    <thead>
+                      <tr>
+                        {outputRun.columns?.map((col) => (
+                          <th key={col}>{col}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {outputRun.records?.slice(0, 50).map((row, rIdx) => (
+                        <tr key={rIdx}>
+                          {outputRun.columns?.map((col) => (
+                            <td key={col}>{String(row[col] ?? "")}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="cleaned-customer-modal-footer" style={{ display: "flex", justifyContent: "space-between" }}>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => handleDownloadOutput(outputRun)}
+                disabled={!outputRun.records?.length}
+              >
+                <Download size={14} /> Download Output CSV
+              </button>
+              <button type="button" className="secondary-button" onClick={() => setOutputRun(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* REPLAY CONFIRMATION MODAL */}
+      {replayModalRun && (
+        <div className="cleaned-customer-overlay" onClick={() => setReplayModalRun(null)}>
+          <div
+            className="cleaned-customer-modal"
+            style={{ maxWidth: "560px" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="cleaned-customer-modal-header">
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <PlayCircle size={20} color="#2563eb" />
+                <h3 style={{ margin: 0 }}>Replay Pipeline Execution</h3>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setReplayModalRun(null)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="cleaned-customer-modal-content" style={{ padding: "16px 20px" }}>
+              <p style={{ margin: "0 0 12px 0", fontSize: "13px", color: "#334155" }}>
+                You are about to replay execution for pipeline <strong>{replayModalRun.pipeline_name}</strong>:
+              </p>
+              <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "12px 14px", fontSize: "12px", marginBottom: "16px" }}>
+                <div style={{ marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Source Run ID:</span> <strong>{replayModalRun.run_id}</strong>
+                </div>
+                <div style={{ marginBottom: "6px" }}>
+                  <span style={{ color: "#64748b" }}>Target Destination:</span> <strong>{replayModalRun.destination_table || "customers"}</strong>
+                </div>
+                <div>
+                  <span style={{ color: "#64748b" }}>Input Reference:</span> <strong>{replayModalRun.input_filename || "dataset_input"}</strong>
+                </div>
+              </div>
+              <p style={{ margin: 0, fontSize: "12px", color: "#64748b", lineHeight: 1.5 }}>
+                • Replay will execute the exact pipeline transformation steps.<br />
+                • A fresh execution run record with a brand-new Run ID will be stored in PostgreSQL.<br />
+                • The current active dataset will be processed through the workflow.
+              </p>
+            </div>
+
+            <div className="cleaned-customer-modal-footer" style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+              <button type="button" className="secondary-button" onClick={() => setReplayModalRun(null)} disabled={isReplaying}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+                onClick={handleConfirmReplay}
+                disabled={isReplaying}
+              >
+                <Play size={14} /> {isReplaying ? "Executing Replay..." : "Confirm & Replay"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* COMPARE RUNS MODAL */}
+      {compareData && (
+        <div className="cleaned-customer-overlay" onClick={() => setCompareData(null)}>
+          <div
+            className="cleaned-customer-modal"
+            style={{ maxWidth: "860px", maxHeight: "90vh", display: "flex", flexDirection: "column" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="cleaned-customer-modal-header">
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <GitCompare size={20} color="#2563eb" />
+                <div>
+                  <h3 style={{ margin: 0 }}>Side-by-Side Run Comparison</h3>
+                  <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>
+                    Run 1: <strong>{compareData.run1?.run_id}</strong> vs Run 2: <strong>{compareData.run2?.run_id}</strong>
+                  </p>
+                </div>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setCompareData(null)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="cleaned-customer-modal-content" style={{ padding: "16px 20px", overflowY: "auto", flex: 1 }}>
+              {/* Summary Metrics Comparison Table */}
+              <h4 style={{ margin: "0 0 10px 0", fontSize: "13px", color: "#1e293b" }}>Key Metrics Comparison</h4>
+              <table className="compare-matrix-table" style={{ marginBottom: "20px" }}>
+                <thead>
+                  <tr>
+                    <th>Metric</th>
+                    <th>Run 1 ({compareData.run1?.run_id?.slice(-8)})</th>
+                    <th>Run 2 ({compareData.run2?.run_id?.slice(-8)})</th>
+                    <th>Delta / Difference</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><strong>Status</strong></td>
+                    <td>
+                      <span className={`run-status-pill ${compareData.run1?.status}`}>{compareData.run1?.status}</span>
+                    </td>
+                    <td>
+                      <span className={`run-status-pill ${compareData.run2?.status}`}>{compareData.run2?.status}</span>
+                    </td>
+                    <td>
+                      <span className={`compare-delta-badge ${compareData.deltas?.status_match ? "positive" : "negative"}`}>
+                        {compareData.deltas?.status_match ? "Matching Status" : "Status Divergence"}
+                      </span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><strong>Execution Duration</strong></td>
+                    <td>{compareData.run1?.duration_ms} ms</td>
+                    <td>{compareData.run2?.duration_ms} ms</td>
+                    <td>
+                      <span className={`compare-delta-badge ${compareData.deltas?.duration_ms <= 0 ? "positive" : "negative"}`}>
+                        {compareData.deltas?.duration_ms > 0 ? `+${compareData.deltas?.duration_ms} ms` : `${compareData.deltas?.duration_ms} ms`}
+                      </span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><strong>Output Rows</strong></td>
+                    <td>{compareData.run1?.output_rows}</td>
+                    <td>{compareData.run2?.output_rows}</td>
+                    <td>
+                      <span className="compare-delta-badge neutral">
+                        {compareData.deltas?.output_rows > 0 ? `+${compareData.deltas?.output_rows}` : compareData.deltas?.output_rows}
+                      </span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><strong>Completed Steps</strong></td>
+                    <td>{compareData.run1?.completed_steps} / {compareData.run1?.steps?.length || 0}</td>
+                    <td>{compareData.run2?.completed_steps} / {compareData.run2?.steps?.length || 0}</td>
+                    <td>
+                      <span className="compare-delta-badge neutral">
+                        {compareData.run2?.completed_steps - compareData.run1?.completed_steps >= 0 ? `+${compareData.run2?.completed_steps - compareData.run1?.completed_steps}` : compareData.run2?.completed_steps - compareData.run1?.completed_steps}
+                      </span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+
+              {/* Step Level Alignment */}
+              <h4 style={{ margin: "0 0 10px 0", fontSize: "13px", color: "#1e293b" }}>Step-Level Breakdown Diff</h4>
+              <table className="compare-matrix-table">
+                <thead>
+                  <tr>
+                    <th>Step Name</th>
+                    <th>Type</th>
+                    <th>Run 1 Status</th>
+                    <th>Run 2 Status</th>
+                    <th>Run 1 Duration</th>
+                    <th>Run 2 Duration</th>
+                    <th>Rows Out Diff</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {compareData.step_comparisons?.map((sc) => {
+                    const rowDiff = (sc.run2_rows_out || 0) - (sc.run1_rows_out || 0);
+                    return (
+                      <tr key={sc.step_id}>
+                        <td><strong>{sc.step_name}</strong></td>
+                        <td><span className="contract-rule-tag type">{sc.step_type}</span></td>
+                        <td><span className={`run-status-pill ${sc.run1_status}`}>{sc.run1_status}</span></td>
+                        <td><span className={`run-status-pill ${sc.run2_status}`}>{sc.run2_status}</span></td>
+                        <td>{sc.run1_duration_ms} ms</td>
+                        <td>{sc.run2_duration_ms} ms</td>
+                        <td>
+                          <span className={`compare-delta-badge ${rowDiff === 0 ? "neutral" : rowDiff > 0 ? "positive" : "negative"}`}>
+                            {rowDiff > 0 ? `+${rowDiff}` : rowDiff}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="cleaned-customer-modal-footer" style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button type="button" className="secondary-button" onClick={() => setCompareData(null)}>
+                Close Comparison
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/* =========================================================
    STAGE 8: DATA CONTRACT MODAL & INPUT VALIDATION
 ========================================================= */
 
@@ -4252,6 +5279,7 @@ function PipelineWorkbenchPage({
   initialPipelineId,
   onPipelineLoaded,
   onBrowsePipelines,
+  onBrowseHistory,
 }) {
   const [pipelineId, setPipelineId] = useState("");
   const [name, setName] = useState("Customer Ingestion & Quality Pipeline");
@@ -5200,6 +6228,16 @@ function PipelineWorkbenchPage({
                 title="Browse all saved pipelines"
               >
                 <Folder size={15} /> Saved Pipelines
+              </button>
+            )}
+            {onBrowseHistory && (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={onBrowseHistory}
+                title="Browse full pipeline execution run history"
+              >
+                <Clock size={15} /> Run History
               </button>
             )}
             <button

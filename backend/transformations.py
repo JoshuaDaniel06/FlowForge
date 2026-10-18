@@ -712,7 +712,7 @@ def execute_step(
     step_id = step.get("id") or "step_unknown"
     step_name = step.get("name") or "Unnamed Step"
     step_type = step.get("type")
-    params = step.get("params") or {}
+    params = step.get("params") or step.get("config") or {}
 
     rows_before = len(df)
     cols_before = list(df.columns)

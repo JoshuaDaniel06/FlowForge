@@ -1,4 +1,5 @@
 import os
+from typing import Optional, List, Dict, Any
 import psycopg2
 from psycopg2 import sql
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
@@ -933,31 +934,54 @@ def record_pipeline_run(run_data: dict, step_runs: list) -> str:
     return run_id
 
 
-def list_pipeline_runs(pipeline_id: str = None, limit: int = 50) -> list:
-    """List execution run history from PostgreSQL."""
+def list_pipeline_runs(
+    pipeline_id: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    sort: str = "desc",
+    limit: int = 100,
+) -> list:
+    """List execution run history from PostgreSQL with search, status, date filtering, and sorting."""
     conn = get_connection()
     cursor = conn.cursor()
 
-    if pipeline_id:
-        cursor.execute("""
-            SELECT run_id, pipeline_id, pipeline_name, status, started_at, duration_ms,
-                   input_filename, input_rows, output_rows, completed_steps, failed_steps,
-                   destination_status, destination_table, error_message
-            FROM pipeline_runs
-            WHERE pipeline_id = %s
-            ORDER BY started_at DESC
-            LIMIT %s;
-        """, (pipeline_id, limit))
-    else:
-        cursor.execute("""
-            SELECT run_id, pipeline_id, pipeline_name, status, started_at, duration_ms,
-                   input_filename, input_rows, output_rows, completed_steps, failed_steps,
-                   destination_status, destination_table, error_message
-            FROM pipeline_runs
-            ORDER BY started_at DESC
-            LIMIT %s;
-        """, (limit,))
+    query = """
+        SELECT run_id, pipeline_id, pipeline_name, status, started_at, completed_at,
+               duration_ms, input_filename, input_rows, output_rows, completed_steps,
+               failed_steps, destination_status, destination_table, error_message
+        FROM pipeline_runs
+        WHERE 1=1
+    """
+    params = []
 
+    if pipeline_id:
+        query += " AND pipeline_id = %s"
+        params.append(pipeline_id)
+
+    if status and status.lower() != "all":
+        query += " AND LOWER(status) = %s"
+        params.append(status.lower())
+
+    if search and search.strip():
+        query += " AND (pipeline_name ILIKE %s OR run_id ILIKE %s)"
+        pattern = f"%{search.strip()}%"
+        params.extend([pattern, pattern])
+
+    if date_from:
+        query += " AND started_at >= %s"
+        params.append(date_from)
+
+    if date_to:
+        query += " AND started_at <= %s"
+        params.append(date_to)
+
+    order_dir = "ASC" if sort.lower() == "asc" else "DESC"
+    query += f" ORDER BY started_at {order_dir} LIMIT %s;"
+    params.append(limit)
+
+    cursor.execute(query, tuple(params))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -969,15 +993,16 @@ def list_pipeline_runs(pipeline_id: str = None, limit: int = 50) -> list:
             "pipeline_name": r[2],
             "status": r[3],
             "started_at": r[4].isoformat() if r[4] else None,
-            "duration_ms": r[5],
-            "input_filename": r[6],
-            "input_rows": r[7],
-            "output_rows": r[8],
-            "completed_steps": r[9],
-            "failed_steps": r[10],
-            "destination_status": r[11],
-            "destination_table": r[12],
-            "error_message": r[13],
+            "completed_at": r[5].isoformat() if r[5] else None,
+            "duration_ms": r[6],
+            "input_filename": r[7],
+            "input_rows": r[8],
+            "output_rows": r[9],
+            "completed_steps": r[10],
+            "failed_steps": r[11],
+            "destination_status": r[12],
+            "destination_table": r[13],
+            "error_message": r[14],
         }
         for r in rows
     ]
@@ -1129,6 +1154,61 @@ def get_pipeline_run_details(run_id: str) -> dict:
     ]
 
     return run_meta
+
+
+def delete_pipeline_run(run_id: str) -> bool:
+    """Delete a pipeline run and its step records from PostgreSQL."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM pipeline_runs WHERE run_id = %s;", (run_id,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return deleted
+
+
+def compare_pipeline_runs(run_id_1: str, run_id_2: str) -> dict:
+    """Compare two execution runs side-by-side."""
+    run1 = get_pipeline_run_details(run_id_1)
+    run2 = get_pipeline_run_details(run_id_2)
+    if not run1 or not run2:
+        return None
+
+    duration_delta = (run2.get("duration_ms") or 0) - (run1.get("duration_ms") or 0)
+    output_rows_delta = (run2.get("output_rows") or 0) - (run1.get("output_rows") or 0)
+
+    # Align steps by order and ID
+    steps1 = {s["step_id"]: s for s in run1.get("steps", [])}
+    steps2 = {s["step_id"]: s for s in run2.get("steps", [])}
+    all_step_ids = list(dict.fromkeys(list(steps1.keys()) + list(steps2.keys())))
+
+    step_comparisons = []
+    for sid in all_step_ids:
+        s1 = steps1.get(sid)
+        s2 = steps2.get(sid)
+        step_comparisons.append({
+            "step_id": sid,
+            "step_name": (s2 or s1).get("step_name"),
+            "step_type": (s2 or s1).get("type"),
+            "run1_status": s1.get("status") if s1 else "not_run",
+            "run2_status": s2.get("status") if s2 else "not_run",
+            "run1_duration_ms": s1.get("duration_ms") if s1 else 0,
+            "run2_duration_ms": s2.get("duration_ms") if s2 else 0,
+            "run1_rows_out": s1.get("rows_after") if s1 else 0,
+            "run2_rows_out": s2.get("rows_after") if s2 else 0,
+        })
+
+    return {
+        "run1": run1,
+        "run2": run2,
+        "deltas": {
+            "duration_ms": duration_delta,
+            "output_rows": output_rows_delta,
+            "status_match": run1.get("status") == run2.get("status"),
+        },
+        "step_comparisons": step_comparisons,
+    }
 
 
 # =========================================================

@@ -35,6 +35,7 @@ import {
   PlayCircle,
   ChevronLeft,
   ChevronRight,
+  Folder,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -70,6 +71,11 @@ const NAV_ITEMS = [
         id: "workbench",
         label: "Pipeline Workbench",
         icon: GitBranch,
+      },
+      {
+        id: "saved-pipelines",
+        label: "Saved Pipelines",
+        icon: Sliders,
       },
       {
         id: "upload",
@@ -133,6 +139,7 @@ function App() {
   const [mobileMenu, setMobileMenu] = useState(false);
   const [message, setMessage] = useState("");
   const [lastUpdated, setLastUpdated] = useState(new Date());
+  const [workbenchPipelineId, setWorkbenchPipelineId] = useState(null);
 
   /* =======================================================
      FILE SELECT
@@ -322,6 +329,10 @@ function App() {
         title: "Pipeline Workbench",
         subtitle: "Design, configure, and validate your data transformation workflows",
       },
+      "saved-pipelines": {
+        title: "Saved Pipelines",
+        subtitle: "Manage, version, duplicate, and restore ETL data pipelines",
+      },
       postgres: {
         title: "Data Sources",
         subtitle: "Inspect PostgreSQL connection status, metadata, and browse relational tables",
@@ -474,6 +485,22 @@ function App() {
             file={file}
             result={result}
             navigate={navigate}
+            initialPipelineId={workbenchPipelineId}
+            onPipelineLoaded={() => setWorkbenchPipelineId(null)}
+            onBrowsePipelines={() => setActivePage("saved-pipelines")}
+          />
+        )}
+
+        {activePage === "saved-pipelines" && (
+          <SavedPipelinesPage
+            onOpenPipeline={(pId) => {
+              setWorkbenchPipelineId(pId);
+              setActivePage("workbench");
+            }}
+            onNewPipeline={() => {
+              setWorkbenchPipelineId("NEW");
+              setActivePage("workbench");
+            }}
           />
         )}
 
@@ -2268,6 +2295,727 @@ function IntermediatePreviewPanel({
 
 
 /* =========================================================
+   STAGE 7: PIPELINE MODALS & SAVED PIPELINES PAGE
+========================================================= */
+
+function PipelineDeleteModal({
+  isOpen,
+  onClose,
+  pipeline,
+  onConfirmDelete,
+  isDeleting,
+}) {
+  if (!isOpen || !pipeline) return null;
+
+  return (
+    <div className="cleaned-customer-overlay" onClick={onClose}>
+      <div
+        className="cleaned-customer-modal"
+        style={{ maxWidth: "480px" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="cleaned-customer-modal-header">
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <AlertTriangle size={20} color="#dc2626" />
+            <h3 style={{ color: "#991b1b" }}>Delete Pipeline</h3>
+          </div>
+          <button type="button" onClick={onClose}>×</button>
+        </div>
+
+        <div className="pipeline-modal-body" style={{ padding: "16px 20px" }}>
+          <p style={{ fontSize: "14px", color: "#334155", lineHeight: "1.5", margin: "0 0 12px 0" }}>
+            Are you sure you want to delete pipeline <strong>"{pipeline.name}"</strong>?
+          </p>
+          <p style={{ fontSize: "12px", color: "#64748b", margin: 0 }}>
+            This action will permanently remove the pipeline definition and all historical version snapshots from PostgreSQL. This cannot be undone.
+          </p>
+        </div>
+
+        <div className="pipeline-modal-footer" style={{ display: "flex", justifyContent: "flex-end", gap: "10px", padding: "14px 20px" }}>
+          <button type="button" className="secondary-button" onClick={onClose} disabled={isDeleting}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            style={{ background: "#dc2626", borderColor: "#dc2626" }}
+            onClick={() => onConfirmDelete(pipeline.id)}
+            disabled={isDeleting}
+          >
+            {isDeleting ? "Deleting..." : "Delete Pipeline"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function PipelineRenameModal({
+  isOpen,
+  onClose,
+  pipeline,
+  onRenameSuccess,
+}) {
+  if (!isOpen || !pipeline) return null;
+
+  const [newName, setNewName] = useState(pipeline.name || "");
+  const [newDesc, setNewDesc] = useState(pipeline.description || "");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (pipeline) {
+      setNewName(pipeline.name || "");
+      setNewDesc(pipeline.description || "");
+      setError(null);
+    }
+  }, [pipeline]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!newName.trim()) {
+      setError("Pipeline name cannot be empty.");
+      return;
+    }
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/${pipeline.id}/rename`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newName.trim(), description: newDesc.trim() }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed to rename pipeline.");
+      }
+      const data = await res.json();
+      onRenameSuccess(data.pipeline);
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="cleaned-customer-overlay" onClick={onClose}>
+      <div
+        className="cleaned-customer-modal"
+        style={{ maxWidth: "520px" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <form onSubmit={handleSubmit}>
+          <div className="cleaned-customer-modal-header">
+            <div>
+              <h3>Rename Pipeline</h3>
+              <p style={{ marginTop: "2px" }}>Update pipeline title and description</p>
+            </div>
+            <button type="button" onClick={onClose}>×</button>
+          </div>
+
+          <div className="pipeline-modal-body" style={{ padding: "16px 20px" }}>
+            {error && (
+              <div className="notification" style={{ background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", marginBottom: "12px" }}>
+                <AlertTriangle size={15} />
+                <span>{error}</span>
+              </div>
+            )}
+
+            <div className="pipeline-form-group" style={{ marginBottom: "14px" }}>
+              <label>Pipeline Name *</label>
+              <input
+                type="text"
+                className="pipeline-form-input"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="e.g. Daily Customer Ingestion"
+                required
+              />
+            </div>
+
+            <div className="pipeline-form-group">
+              <label>Description</label>
+              <textarea
+                className="pipeline-form-input"
+                style={{ height: "80px", resize: "vertical" }}
+                value={newDesc}
+                onChange={(e) => setNewDesc(e.target.value)}
+                placeholder="Optional description of pipeline transformations..."
+              />
+            </div>
+          </div>
+
+          <div className="pipeline-modal-footer" style={{ display: "flex", justifyContent: "flex-end", gap: "10px", padding: "14px 20px" }}>
+            <button type="button" className="secondary-button" onClick={onClose} disabled={isSubmitting}>
+              Cancel
+            </button>
+            <button type="submit" className="primary-button" disabled={isSubmitting}>
+              {isSubmitting ? "Saving..." : "Save Changes"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+
+function PipelineVersionsModal({
+  isOpen,
+  onClose,
+  pipelineId,
+  pipelineName,
+  currentVersion,
+  onRestoreSuccess,
+}) {
+  if (!isOpen || !pipelineId) return null;
+
+  const [versions, setVersions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [restoringVersion, setRestoringVersion] = useState(null);
+  const [expandedVersion, setExpandedVersion] = useState(null);
+
+  const fetchVersions = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/${pipelineId}/versions`);
+      if (!res.ok) throw new Error("Failed to load version history.");
+      const data = await res.json();
+      setVersions(data.versions || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchVersions();
+  }, [pipelineId]);
+
+  const handleRestore = async (verNum) => {
+    const confirmed = window.confirm(
+      `Restore Version ${verNum} as a new version? All existing version history will remain preserved in PostgreSQL.`
+    );
+    if (!confirmed) return;
+
+    setRestoringVersion(verNum);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/${pipelineId}/versions/${verNum}/restore`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed to restore version.");
+      }
+      const data = await res.json();
+      if (onRestoreSuccess) {
+        onRestoreSuccess(data);
+      }
+      fetchVersions();
+    } catch (err) {
+      alert(`Restore failed: ${err.message}`);
+    } finally {
+      setRestoringVersion(null);
+    }
+  };
+
+  return (
+    <div className="cleaned-customer-overlay" onClick={onClose}>
+      <div
+        className="cleaned-customer-modal"
+        style={{ width: "min(720px, 95%)", maxHeight: "85vh" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="cleaned-customer-modal-header">
+          <div>
+            <h3>Version History: {pipelineName}</h3>
+            <p style={{ marginTop: "2px" }}>
+              Immutable historical version snapshots stored in PostgreSQL
+            </p>
+          </div>
+          <button type="button" onClick={onClose}>×</button>
+        </div>
+
+        <div className="pipeline-modal-body" style={{ maxHeight: "calc(85vh - 140px)", overflowY: "auto", padding: "16px 20px" }}>
+          {error && (
+            <div className="notification" style={{ background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", marginBottom: "12px" }}>
+              <AlertTriangle size={15} />
+              <span>{error}</span>
+            </div>
+          )}
+
+          {loading ? (
+            <div style={{ padding: "30px", textAlign: "center", color: "#64748b" }}>
+              Loading version snapshots from PostgreSQL...
+            </div>
+          ) : versions.length > 0 ? (
+            <div>
+              {versions.map((ver) => {
+                const isCurrent = ver.version === currentVersion;
+                const isExpanded = expandedVersion === ver.version;
+                const steps = ver.definition?.steps || [];
+
+                return (
+                  <div
+                    key={ver.id || ver.version}
+                    className={`version-item-card ${isCurrent ? "active" : ""}`}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span className="pipeline-version-badge" style={{ fontSize: "12px", padding: "3px 8px" }}>
+                            Version {ver.version}
+                          </span>
+                          {isCurrent && (
+                            <span className="pipeline-status-badge saved" style={{ fontSize: "11px" }}>
+                              Current Active
+                            </span>
+                          )}
+                          <span style={{ fontSize: "12px", color: "#64748b" }}>
+                            {steps.length} step{steps.length !== 1 ? "s" : ""}
+                          </span>
+                        </div>
+                        <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+                          {ver.created_at ? new Date(ver.created_at).toLocaleString() : "—"}
+                        </span>
+                      </div>
+
+                      <p style={{ fontSize: "12px", color: "#475569", margin: "4px 0" }}>
+                        {ver.description || ver.definition?.description || "No description for this version snapshot."}
+                      </p>
+
+                      {isExpanded && (
+                        <div className="version-steps-preview">
+                          <strong style={{ display: "block", marginBottom: "6px", color: "#0f172a" }}>
+                            Steps Configuration ({steps.length}):
+                          </strong>
+                          {steps.length > 0 ? (
+                            <ol style={{ paddingLeft: "18px", margin: 0 }}>
+                              {steps.map((st, i) => (
+                                <li key={i} style={{ marginBottom: "4px" }}>
+                                  <strong>{st.name || st.id}</strong> (<code>{st.type}</code>)
+                                </li>
+                              ))}
+                            </ol>
+                          ) : (
+                            <em>No transformation steps in this version snapshot.</em>
+                          )}
+                        </div>
+                      )}
+
+                      <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          style={{ fontSize: "11px", padding: "4px 10px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                          onClick={() => setExpandedVersion(isExpanded ? null : ver.version)}
+                        >
+                          <Eye size={12} /> {isExpanded ? "Hide Steps" : "View Version"}
+                        </button>
+
+                        {!isCurrent && (
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            style={{ fontSize: "11px", padding: "4px 10px", borderColor: "#2563eb", color: "#2563eb", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                            onClick={() => handleRestore(ver.version)}
+                            disabled={restoringVersion === ver.version}
+                          >
+                            <RefreshCw size={12} className={restoringVersion === ver.version ? "spin" : ""} />
+                            {restoringVersion === ver.version ? "Restoring..." : "Restore Version"}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="cleaned-no-results">
+              <Clock size={28} />
+              <h3>No Version History</h3>
+              <p>Save this pipeline to create its initial version snapshot.</p>
+            </div>
+          )}
+        </div>
+
+        <div className="pipeline-modal-footer" style={{ display: "flex", justifyContent: "flex-end", padding: "14px 20px" }}>
+          <button type="button" className="secondary-button" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function SavedPipelinesPage({ onOpenPipeline, onNewPipeline }) {
+  const [pipelines, setPipelines] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("updated_desc");
+  const [banner, setBanner] = useState(null);
+
+  // Modals state
+  const [deletingPipeline, setDeletingPipeline] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [renamingPipeline, setRenamingPipeline] = useState(null);
+  const [versionsModalPipeline, setVersionsModalPipeline] = useState(null);
+  const [duplicatingId, setDuplicatingId] = useState(null);
+
+  const fetchPipelines = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/pipelines`);
+      if (res.ok) {
+        const data = await res.json();
+        setPipelines(data.pipelines || []);
+      }
+    } catch (err) {
+      console.error("Failed to load pipelines", err);
+      setBanner({ type: "error", text: "Failed to load saved pipelines from PostgreSQL." });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchPipelines();
+  }, []);
+
+  const handleDuplicate = async (pipelineId) => {
+    setDuplicatingId(pipelineId);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/${pipelineId}/duplicate`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error("Duplication failed.");
+      const data = await res.json();
+      setBanner({ type: "success", text: data.message || "Pipeline duplicated successfully." });
+      fetchPipelines();
+    } catch (err) {
+      setBanner({ type: "error", text: err.message || "Failed to duplicate pipeline." });
+    } finally {
+      setDuplicatingId(null);
+    }
+  };
+
+  const handleConfirmDelete = async (pipelineId) => {
+    setIsDeleting(true);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/${pipelineId}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error("Failed to delete pipeline.");
+      setBanner({ type: "success", text: "Pipeline deleted from PostgreSQL." });
+      setDeletingPipeline(null);
+      fetchPipelines();
+    } catch (err) {
+      setBanner({ type: "error", text: err.message });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleRenameSuccess = (updatedPipeline) => {
+    setBanner({ type: "success", text: `Pipeline renamed to '${updatedPipeline.name}'.` });
+    fetchPipelines();
+  };
+
+  // Filter & Sort
+  const filteredPipelines = pipelines
+    .filter((p) => {
+      const matchesSearch =
+        !searchTerm.trim() ||
+        p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (p.description && p.description.toLowerCase().includes(searchTerm.toLowerCase()));
+
+      const matchesStatus =
+        statusFilter === "all" || p.status?.toLowerCase() === statusFilter.toLowerCase();
+
+      return matchesSearch && matchesStatus;
+    })
+    .sort((a, b) => {
+      if (sortBy === "name_asc") {
+        return a.name.localeCompare(b.name);
+      }
+      if (sortBy === "steps_desc") {
+        return (b.steps_count || 0) - (a.steps_count || 0);
+      }
+      return new Date(b.updated_at || 0) - new Date(a.updated_at || 0);
+    });
+
+  const totalPipelines = pipelines.length;
+  const savedCount = pipelines.filter((p) => p.status === "saved").length;
+  const draftCount = pipelines.filter((p) => p.status === "draft").length;
+  const totalSteps = pipelines.reduce((acc, p) => acc + (p.steps_count || 0), 0);
+
+  return (
+    <div className="page-container">
+      {/* StatCards */}
+      <div className="stats">
+        <StatCard
+          label="TOTAL PIPELINES"
+          value={totalPipelines}
+          description="Stored in PostgreSQL"
+          icon={GitBranch}
+        />
+        <StatCard
+          label="SAVED PIPELINES"
+          value={savedCount}
+          description="Ready for execution"
+          icon={CircleCheck}
+        />
+        <StatCard
+          label="DRAFTS"
+          value={draftCount}
+          description="Work in progress"
+          icon={FileCheck2}
+        />
+        <StatCard
+          label="TRANSFORMATION STEPS"
+          value={totalSteps}
+          description="Total steps across pipelines"
+          icon={Layers}
+        />
+      </div>
+
+      <div className="panel">
+        <PanelHeader
+          title="Saved Pipelines"
+          description="Browse, duplicate, rename, version, and execute saved ETL pipelines"
+          icon={Sliders}
+        />
+
+        {banner && (
+          <div
+            className={`notification ${banner.type === "success" ? "notification-success" : "notification-error"}`}
+            style={{
+              margin: "0 0 16px 0",
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+              padding: "10px 14px",
+              borderRadius: "6px",
+              background: banner.type === "success" ? "#f0fdf4" : "#fef2f2",
+              border: `1px solid ${banner.type === "success" ? "#bbf7d0" : "#fecaca"}`,
+              color: banner.type === "success" ? "#166534" : "#991b1b",
+            }}
+          >
+            {banner.type === "success" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+            <span style={{ fontSize: "13px" }}>{banner.text}</span>
+            <button
+              type="button"
+              onClick={() => setBanner(null)}
+              style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", color: "inherit", fontSize: "16px" }}
+            >
+              ×
+            </button>
+          </div>
+        )}
+
+        {/* Toolbar: Search, Filters, New Pipeline */}
+        <div className="saved-pipelines-toolbar">
+          <div className="saved-pipelines-controls">
+            <div className="cleaned-search-box" style={{ maxWidth: "280px", margin: 0 }}>
+              <Search size={15} />
+              <input
+                type="text"
+                placeholder="Search pipelines..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+
+            <select
+              className="pipeline-form-select"
+              style={{ width: "auto", minWidth: "140px" }}
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+            >
+              <option value="all">All Statuses</option>
+              <option value="saved">Saved Only</option>
+              <option value="draft">Drafts Only</option>
+            </select>
+
+            <select
+              className="pipeline-form-select"
+              style={{ width: "auto", minWidth: "180px" }}
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+            >
+              <option value="updated_desc">Sort by Last Updated</option>
+              <option value="name_asc">Sort by Name (A-Z)</option>
+              <option value="steps_desc">Sort by Step Count</option>
+            </select>
+          </div>
+
+          <button
+            type="button"
+            className="primary-button"
+            style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+            onClick={onNewPipeline}
+          >
+            <Plus size={15} /> New Pipeline
+          </button>
+        </div>
+
+        {/* Pipeline Cards Grid */}
+        {loading ? (
+          <div style={{ padding: "40px", textAlign: "center", color: "#64748b" }}>
+            Loading pipelines from PostgreSQL...
+          </div>
+        ) : filteredPipelines.length > 0 ? (
+          <div className="pipelines-grid">
+            {filteredPipelines.map((p) => (
+              <div key={p.id} className="pipeline-card-modern">
+                <div>
+                  <div className="pipeline-card-top">
+                    <div className="pipeline-card-title-group">
+                      <GitBranch size={17} color="#2563eb" />
+                      <h3 title={p.name}>{p.name}</h3>
+                    </div>
+                    <div className="pipeline-badge-group">
+                      <span className="pipeline-version-badge">
+                        v{p.version || 1}
+                      </span>
+                      <span className={`pipeline-status-badge ${p.status === "saved" ? "saved" : "draft"}`}>
+                        {p.status || "draft"}
+                      </span>
+                    </div>
+                  </div>
+
+                  <p className="pipeline-card-desc">
+                    {p.description || "No description provided."}
+                  </p>
+
+                  <div className="pipeline-card-meta">
+                    <div className="pipeline-card-meta-left">
+                      <span className="pipeline-steps-tag">
+                        <Layers size={13} /> {p.steps_count || 0} step{(p.steps_count !== 1) ? "s" : ""}
+                      </span>
+                      <span>
+                        Target: {p.destination?.table || "customers"}
+                      </span>
+                    </div>
+                    <span>
+                      {p.updated_at ? new Date(p.updated_at).toLocaleDateString() : "—"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="pipeline-card-actions">
+                  <div className="pipeline-card-actions-left">
+                    <button
+                      type="button"
+                      className="primary-button"
+                      style={{ fontSize: "12px", padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                      onClick={() => onOpenPipeline(p.id)}
+                      title="Open in Pipeline Workbench"
+                    >
+                      <ArrowRight size={13} /> Open
+                    </button>
+
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      style={{ fontSize: "12px", padding: "6px 10px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                      onClick={() => handleDuplicate(p.id)}
+                      disabled={duplicatingId === p.id}
+                      title="Duplicate pipeline"
+                    >
+                      <Copy size={13} /> {duplicatingId === p.id ? "Duplicating..." : "Duplicate"}
+                    </button>
+
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      style={{ fontSize: "12px", padding: "6px 10px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                      onClick={() => setRenamingPipeline(p)}
+                      title="Rename pipeline"
+                    >
+                      <Edit2 size={13} /> Rename
+                    </button>
+
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      style={{ fontSize: "12px", padding: "6px 10px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                      onClick={() => setVersionsModalPipeline(p)}
+                      title="View and restore versions"
+                    >
+                      <Clock size={13} /> Versions
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="secondary-button pipeline-btn-delete"
+                    style={{ fontSize: "12px", padding: "6px 10px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                    onClick={() => setDeletingPipeline(p)}
+                    title="Delete pipeline"
+                  >
+                    <Trash2 size={13} /> Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="cleaned-no-results">
+            <GitBranch size={28} />
+            <h3>No Pipelines Found</h3>
+            <p>
+              {searchTerm || statusFilter !== "all"
+                ? "Try adjusting your search query or filters."
+                : "No saved pipelines exist yet. Click 'New Pipeline' to build your first ETL pipeline."}
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Delete Confirmation Modal */}
+      <PipelineDeleteModal
+        isOpen={Boolean(deletingPipeline)}
+        pipeline={deletingPipeline}
+        onClose={() => setDeletingPipeline(null)}
+        onConfirmDelete={handleConfirmDelete}
+        isDeleting={isDeleting}
+      />
+
+      {/* Rename Modal */}
+      <PipelineRenameModal
+        isOpen={Boolean(renamingPipeline)}
+        pipeline={renamingPipeline}
+        onClose={() => setRenamingPipeline(null)}
+        onRenameSuccess={handleRenameSuccess}
+      />
+
+      {/* Version History Modal */}
+      <PipelineVersionsModal
+        isOpen={Boolean(versionsModalPipeline)}
+        pipelineId={versionsModalPipeline?.id}
+        pipelineName={versionsModalPipeline?.name}
+        currentVersion={versionsModalPipeline?.version || 1}
+        onClose={() => setVersionsModalPipeline(null)}
+        onRestoreSuccess={(res) => {
+          setBanner({ type: "success", text: res.message || "Version restored successfully." });
+          fetchPipelines();
+        }}
+      />
+    </div>
+  );
+}
+
+
+/* =========================================================
    PIPELINE WORKBENCH PAGE (STAGE 2)
 ========================================================= */
 
@@ -2275,6 +3023,9 @@ function PipelineWorkbenchPage({
   file,
   result,
   navigate,
+  initialPipelineId,
+  onPipelineLoaded,
+  onBrowsePipelines,
 }) {
   const [pipelineId, setPipelineId] = useState("");
   const [name, setName] = useState("Customer Ingestion & Quality Pipeline");
@@ -2331,6 +3082,9 @@ function PipelineWorkbenchPage({
   const [isValidatingMapping, setIsValidatingMapping] = useState(false);
   const [isTestingConn, setIsTestingConn] = useState(false);
   const [isLoadingOutput, setIsLoadingOutput] = useState(false);
+
+  // STAGE 7: Pipeline Versioning Modal State
+  const [versionsModalOpen, setVersionsModalOpen] = useState(false);
 
   useEffect(() => {
     fetch(`${API_URL}/db/tables`)
@@ -2494,6 +3248,16 @@ function PipelineWorkbenchPage({
     }
   };
 
+  useEffect(() => {
+    if (initialPipelineId === "NEW") {
+      handleNewPipeline();
+      if (onPipelineLoaded) onPipelineLoaded();
+    } else if (initialPipelineId) {
+      handleOpenSavedPipeline(initialPipelineId);
+      if (onPipelineLoaded) onPipelineLoaded();
+    }
+  }, [initialPipelineId]);
+
   const handleAddStepClick = () => {
     setEditingStepIndex(null);
     setModalOpen(true);
@@ -2616,6 +3380,42 @@ function PipelineWorkbenchPage({
     } catch (err) {
       console.error(err);
       setBannerMessage(err.message || "Failed to save pipeline.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSaveAsNewVersion = async () => {
+    if (!pipelineId) {
+      handleSavePipeline();
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const payload = {
+        definition: {
+          name,
+          description,
+          input_source: { type: inputSource },
+          steps,
+          destination,
+          error_policy: errorPolicy,
+          status: "saved",
+        },
+      };
+      const res = await fetch(`${API_URL}/pipelines/${pipelineId}/versions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error("Failed to save as new version.");
+      const data = await res.json();
+      setVersion(data.version);
+      setStatus("saved");
+      setBannerMessage(data.message || `Saved pipeline as new Version ${data.version}.`);
+      loadSavedPipelines();
+    } catch (err) {
+      setBannerMessage(err.message || "Failed to save version.");
     } finally {
       setIsSaving(false);
     }
@@ -3118,6 +3918,34 @@ function PipelineWorkbenchPage({
             >
               <Database size={15} /> {isSaving ? "Saving..." : "Save Pipeline"}
             </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={handleSaveAsNewVersion}
+              disabled={isSaving || !pipelineId}
+              title="Save current state as a new version"
+            >
+              <GitBranch size={15} /> Save as New Version
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => setVersionsModalOpen(true)}
+              disabled={!pipelineId}
+              title="View version history and restore previous versions"
+            >
+              <Clock size={15} /> Version History (v{version || 1})
+            </button>
+            {onBrowsePipelines && (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={onBrowsePipelines}
+                title="Browse all saved pipelines"
+              >
+                <Folder size={15} /> Saved Pipelines
+              </button>
+            )}
           </div>
 
           <div className="pipeline-actions-right">
@@ -3297,6 +4125,28 @@ function PipelineWorkbenchPage({
         onClose={() => setPreviewModalTable(null)}
         tableName={previewModalTable}
         schema={destination.schema || "public"}
+      />
+
+      {/* PIPELINE VERSION HISTORY MODAL (STAGE 7 - FEATURE 6) */}
+      <PipelineVersionsModal
+        isOpen={versionsModalOpen}
+        pipelineId={pipelineId}
+        pipelineName={name}
+        currentVersion={version || 1}
+        onClose={() => setVersionsModalOpen(false)}
+        onRestoreSuccess={(res) => {
+          if (res.pipeline) {
+            setVersion(res.new_version || res.pipeline.version);
+            setSteps(res.pipeline.steps || []);
+            setName(res.pipeline.name || name);
+            setDescription(res.pipeline.description || description);
+            if (res.pipeline.destination) setDestination(res.pipeline.destination);
+            if (res.pipeline.error_policy) setErrorPolicy(res.pipeline.error_policy);
+            if (res.pipeline.status) setStatus(res.pipeline.status);
+            setBannerMessage(res.message || `Restored pipeline to new Version ${res.new_version}.`);
+          }
+          loadSavedPipelines();
+        }}
       />
     </div>
   );

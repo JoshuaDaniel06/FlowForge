@@ -6362,3 +6362,202 @@ body {
   background: #fee2e2;
   color: #b91c1c;
 }
+
+/* =========================================================
+   STAGE 7: SAVED PIPELINES & VERSIONING
+========================================================= */
+
+.saved-pipelines-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.saved-pipelines-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex: 1;
+}
+
+.pipelines-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 18px;
+}
+
+.pipeline-card-modern {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  transition: all 0.2s ease;
+}
+
+.pipeline-card-modern:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.pipeline-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.pipeline-card-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pipeline-card-title-group h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: #0f172a;
+  margin: 0;
+}
+
+.pipeline-badge-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.pipeline-version-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #eff6ff;
+  color: #2563eb;
+  border: 1px solid #dbeafe;
+}
+
+.pipeline-status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.pipeline-status-badge.saved {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.pipeline-status-badge.draft {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.pipeline-card-desc {
+  font-size: 13px;
+  color: #64748b;
+  margin: 6px 0 14px 0;
+  line-height: 1.5;
+  min-height: 38px;
+}
+
+.pipeline-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-top: 1px solid #f1f5f9;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 14px;
+}
+
+.pipeline-card-meta-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pipeline-steps-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.pipeline-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pipeline-card-actions-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pipeline-btn-delete {
+  color: #dc2626 !important;
+}
+
+.pipeline-btn-delete:hover {
+  background: #fee2e2 !important;
+  border-color: #fca5a5 !important;
+}
+
+.version-item-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 14px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.version-item-card.active {
+  border-color: #2563eb;
+  background: #f8faff;
+}
+
+.version-item-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.version-item-meta {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.version-steps-preview {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: #334155;
+  max-height: 200px;
+  overflow-y: auto;
+}

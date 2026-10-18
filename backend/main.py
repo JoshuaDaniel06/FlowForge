@@ -17,17 +17,23 @@ from backend.database import (
     check_connection,
     create_pipeline_run,
     delete_pipeline,
+    duplicate_pipeline,
     finish_pipeline_run,
     get_connection,
     get_pipeline,
     get_pipeline_run_details,
+    get_pipeline_version,
     get_public_tables,
     init_db,
     list_pipeline_runs,
+    list_pipeline_versions,
     list_pipelines,
     preview_table,
     record_pipeline_run,
+    rename_pipeline,
+    restore_pipeline_version,
     save_pipeline,
+    save_pipeline_version,
     validate_destination_mapping,
     write_dataframe_to_postgres,
 )
@@ -92,6 +98,19 @@ class LoadOutputPayload(BaseModel):
     schema_name: Optional[str] = "public"
     mode: Optional[str] = "append"
     column_mapping: Optional[Dict[str, str]] = None
+
+
+class DuplicatePipelinePayload(BaseModel):
+    new_name: Optional[str] = None
+
+
+class RenamePipelinePayload(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class SaveVersionPayload(BaseModel):
+    definition: Optional[Dict[str, Any]] = None
 
 
 
@@ -629,6 +648,106 @@ def remove_pipeline(pipeline_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete pipeline: {e}")
+
+
+@app.post("/pipelines/{pipeline_id}/duplicate")
+def duplicate_pipeline_endpoint(pipeline_id: str, payload: Optional[DuplicatePipelinePayload] = None):
+    """
+    Duplicate an existing pipeline with a new unique ID, copy of steps,
+    initial version 1, and 'saved' status in PostgreSQL.
+    """
+    try:
+        new_name = payload.new_name if payload else None
+        duplicated = duplicate_pipeline(pipeline_id=pipeline_id, new_name=new_name)
+        return {
+            "status": "success",
+            "message": f"Pipeline duplicated as '{duplicated['name']}'.",
+            "pipeline": duplicated,
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to duplicate pipeline: {e}")
+
+
+@app.post("/pipelines/{pipeline_id}/rename")
+def rename_pipeline_endpoint(pipeline_id: str, payload: RenamePipelinePayload):
+    """
+    Rename an existing pipeline's name and/or description in PostgreSQL.
+    """
+    try:
+        updated = rename_pipeline(
+            pipeline_id=pipeline_id,
+            new_name=payload.name,
+            new_description=payload.description,
+        )
+        return {
+            "status": "success",
+            "message": f"Pipeline renamed to '{updated['name']}'.",
+            "pipeline": updated,
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to rename pipeline: {e}")
+
+
+@app.get("/pipelines/{pipeline_id}/versions")
+def get_pipeline_version_history(pipeline_id: str):
+    """
+    Retrieve full version history for a pipeline from PostgreSQL.
+    """
+    try:
+        versions = list_pipeline_versions(pipeline_id)
+        return {
+            "status": "success",
+            "pipeline_id": pipeline_id,
+            "total_versions": len(versions),
+            "versions": versions,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve version history: {e}")
+
+
+@app.get("/pipelines/{pipeline_id}/versions/{version}")
+def get_pipeline_version_snapshot(pipeline_id: str, version: int):
+    """
+    Retrieve a specific historical version snapshot for a pipeline.
+    """
+    snapshot = get_pipeline_version(pipeline_id, version)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail=f"Version {version} not found for pipeline '{pipeline_id}'.")
+    return {"status": "success", "version": snapshot, "version_snapshot": snapshot}
+
+
+@app.post("/pipelines/{pipeline_id}/versions")
+def save_as_new_version(pipeline_id: str, payload: Optional[SaveVersionPayload] = None):
+    """
+    Save pipeline definition as a new incremented version (Version N+1) in PostgreSQL.
+    """
+    try:
+        defn = payload.definition if payload else None
+        res = save_pipeline_version(pipeline_id, definition_update=defn)
+        return res
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save as new version: {e}")
+
+
+@app.post("/pipelines/{pipeline_id}/versions/{version}/restore")
+def restore_version_endpoint(pipeline_id: str, version: int):
+    """
+    Restore an old version snapshot without erasing history.
+    Saves snapshot definition as Version N+1.
+    """
+    try:
+        res = restore_pipeline_version(pipeline_id, version_to_restore=version)
+        return res
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to restore version: {e}")
 
 
 @app.post("/pipelines/validate")

@@ -150,6 +150,23 @@ def init_db():
         );
     """)
 
+    # 7. Ensure unique index on pipeline versions
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_versions_uniq
+        ON pipeline_versions (pipeline_id, version);
+    """)
+
+    # Backfill initial version for any pipelines that have none
+    cursor.execute("""
+        INSERT INTO pipeline_versions (pipeline_id, version, definition, created_at)
+        SELECT p.id, p.version, to_jsonb(p), p.created_at
+        FROM pipelines p
+        WHERE NOT EXISTS (
+            SELECT 1 FROM pipeline_versions pv
+            WHERE pv.pipeline_id = p.id AND pv.version = p.version
+        );
+    """)
+
     conn.commit()
     cursor.close()
     conn.close()
@@ -534,11 +551,9 @@ def save_pipeline(p: dict) -> dict:
     """, (pipeline_id, name, description, input_source, steps, destination, error_policy, version, status))
 
     row = cursor.fetchone()
-    conn.commit()
-    cursor.close()
-    conn.close()
 
-    return {
+    # Automatically archive version snapshot in pipeline_versions
+    pipeline_dict = {
         "id": row[0],
         "name": row[1],
         "description": row[2],
@@ -548,8 +563,222 @@ def save_pipeline(p: dict) -> dict:
         "error_policy": row[6],
         "version": row[7],
         "status": row[8],
+    }
+    cursor.execute("""
+        INSERT INTO pipeline_versions (pipeline_id, version, definition, created_at)
+        VALUES (%s, %s, %s::jsonb, CURRENT_TIMESTAMP)
+        ON CONFLICT (pipeline_id, version) DO UPDATE SET
+            definition = EXCLUDED.definition;
+    """, (pipeline_id, version, json.dumps(pipeline_dict)))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return {
+        **pipeline_dict,
         "created_at": row[9].isoformat() if row[9] else None,
         "updated_at": row[10].isoformat() if row[10] else None,
+    }
+
+
+def duplicate_pipeline(pipeline_id: str, new_name: str = None) -> dict:
+    """Duplicate an existing pipeline as a new saved pipeline with version 1."""
+    import time
+    orig = get_pipeline(pipeline_id)
+    if not orig:
+        raise ValueError(f"Pipeline with ID '{pipeline_id}' not found.")
+
+    new_id = f"pl_{int(time.time() * 1000)}"
+    target_name = (new_name or f"{orig['name']} (Copy)").strip()
+
+    copy_payload = {
+        "id": new_id,
+        "name": target_name,
+        "description": orig.get("description", ""),
+        "input_source": orig.get("input_source") or {"type": "current_dataset"},
+        "steps": orig.get("steps") or [],
+        "destination": orig.get("destination") or {"type": "postgres", "table": "customers"},
+        "error_policy": orig.get("error_policy", "stop_on_error"),
+        "version": 1,
+        "status": "saved",
+    }
+    return save_pipeline(copy_payload)
+
+
+def rename_pipeline(pipeline_id: str, new_name: str, new_description: str = None) -> dict:
+    """Update pipeline name and optionally description."""
+    if not new_name or not new_name.strip():
+        raise ValueError("Pipeline name cannot be empty.")
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    if new_description is not None:
+        cursor.execute("""
+            UPDATE pipelines SET
+                name = %s,
+                description = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            RETURNING id;
+        """, (new_name.strip(), new_description.strip(), pipeline_id))
+    else:
+        cursor.execute("""
+            UPDATE pipelines SET
+                name = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            RETURNING id;
+        """, (new_name.strip(), pipeline_id))
+
+    row = cursor.fetchone()
+    if not row:
+        cursor.close()
+        conn.close()
+        raise ValueError(f"Pipeline with ID '{pipeline_id}' not found.")
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return get_pipeline(pipeline_id)
+
+
+def save_pipeline_version(pipeline_id: str, definition_update: dict = None) -> dict:
+    """
+    Increment pipeline version by 1, update current pipeline,
+    and archive immutable snapshot into pipeline_versions.
+    """
+    import json
+    p = get_pipeline(pipeline_id)
+    if not p:
+        raise ValueError(f"Pipeline with ID '{pipeline_id}' not found.")
+
+    new_version = int(p.get("version", 1)) + 1
+
+    merged = {**p}
+    if definition_update:
+        if "name" in definition_update and definition_update["name"]:
+            merged["name"] = definition_update["name"].strip()
+        if "description" in definition_update:
+            merged["description"] = definition_update["description"].strip()
+        if "steps" in definition_update and isinstance(definition_update["steps"], list):
+            merged["steps"] = definition_update["steps"]
+        if "input_source" in definition_update and isinstance(definition_update["input_source"], dict):
+            merged["input_source"] = definition_update["input_source"]
+        if "destination" in definition_update and isinstance(definition_update["destination"], dict):
+            merged["destination"] = definition_update["destination"]
+        if "error_policy" in definition_update and definition_update["error_policy"]:
+            merged["error_policy"] = definition_update["error_policy"]
+
+    merged["version"] = new_version
+    merged["status"] = "saved"
+
+    # Save to pipelines and archive in pipeline_versions
+    saved = save_pipeline(merged)
+
+    return {
+        "status": "success",
+        "pipeline": saved,
+        "version": new_version,
+        "message": f"Saved pipeline '{saved['name']}' as new Version {new_version}."
+    }
+
+
+def list_pipeline_versions(pipeline_id: str) -> list:
+    """Retrieve full version history for a pipeline ordered from newest to oldest."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, pipeline_id, version, definition, created_at
+        FROM pipeline_versions
+        WHERE pipeline_id = %s
+        ORDER BY version DESC;
+    """, (pipeline_id,))
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    versions = []
+    for r in rows:
+        defn = r[3] if isinstance(r[3], dict) else {}
+        steps = defn.get("steps") or []
+        versions.append({
+            "id": r[0],
+            "pipeline_id": r[1],
+            "version": r[2],
+            "created_at": r[4].isoformat() if r[4] else None,
+            "steps_count": len(steps) if isinstance(steps, list) else 0,
+            "name": defn.get("name", "Untitled Pipeline"),
+            "description": defn.get("description", ""),
+            "status": defn.get("status", "saved"),
+            "definition": defn,
+        })
+    return versions
+
+
+def get_pipeline_version(pipeline_id: str, version: int):
+    """Retrieve a specific version snapshot."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, pipeline_id, version, definition, created_at
+        FROM pipeline_versions
+        WHERE pipeline_id = %s AND version = %s;
+    """, (pipeline_id, version))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if not row:
+        return None
+
+    defn = row[3] if isinstance(row[3], dict) else {}
+    return {
+        "id": row[0],
+        "pipeline_id": row[1],
+        "version": row[2],
+        "created_at": row[4].isoformat() if row[4] else None,
+        "definition": defn,
+    }
+
+
+def restore_pipeline_version(pipeline_id: str, version_to_restore: int) -> dict:
+    """
+    Restore an old version snapshot without erasing history.
+    Fetches snapshot of version_to_restore and saves it as version (current_version + 1).
+    """
+    snap = get_pipeline_version(pipeline_id, version_to_restore)
+    if not snap:
+        raise ValueError(f"Version {version_to_restore} of pipeline '{pipeline_id}' not found.")
+
+    current = get_pipeline(pipeline_id)
+    if not current:
+        raise ValueError(f"Pipeline '{pipeline_id}' not found.")
+
+    new_version = int(current.get("version", 1)) + 1
+
+    restored_defn = snap.get("definition") or {}
+    payload = {
+        "id": pipeline_id,
+        "name": current.get("name"),
+        "description": restored_defn.get("description", current.get("description")),
+        "input_source": restored_defn.get("input_source") or current.get("input_source"),
+        "steps": restored_defn.get("steps") or [],
+        "destination": restored_defn.get("destination") or current.get("destination"),
+        "error_policy": restored_defn.get("error_policy") or current.get("error_policy"),
+        "version": new_version,
+        "status": "saved",
+    }
+
+    # Save as new version
+    saved = save_pipeline(payload)
+
+    return {
+        "status": "success",
+        "restored_from_version": version_to_restore,
+        "new_version": new_version,
+        "pipeline": saved,
+        "message": f"Successfully restored Version {version_to_restore} as new Version {new_version}."
     }
 
 

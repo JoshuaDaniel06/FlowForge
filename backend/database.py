@@ -167,6 +167,19 @@ def init_db():
         );
     """)
 
+    # Seed default data contract rules for initial customer pipelines if none exist
+    cursor.execute("SELECT COUNT(*) FROM data_contracts;")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("""
+            INSERT INTO data_contracts (
+                pipeline_id, rule_name, column_name, is_required,
+                expected_type, allow_null, min_value, max_value, is_unique, permitted_values
+            ) VALUES
+            ('pl_default_customers', 'Required & Unique Email', 'email', TRUE, 'string', FALSE, NULL, NULL, TRUE, '[]'::jsonb),
+            ('pl_default_customers', 'Valid Age Range', 'age', TRUE, 'integer', TRUE, 18, 120, FALSE, '[]'::jsonb),
+            ('pl_default_customers', 'Permitted Cities', 'city', FALSE, 'string', TRUE, NULL, NULL, FALSE, '[\"Chennai\", \"Madurai\", \"Coimbatore\", \"Bangalore\", \"Mumbai\"]'::jsonb);
+        """)
+
     conn.commit()
     cursor.close()
     conn.close()
@@ -846,9 +859,10 @@ def list_pipelines():
 
 
 def delete_pipeline(pipeline_id: str) -> bool:
-    """Delete a pipeline by ID."""
+    """Delete a pipeline by ID and cascade delete associated contracts."""
     conn = get_connection()
     cursor = conn.cursor()
+    cursor.execute("DELETE FROM data_contracts WHERE pipeline_id = %s;", (pipeline_id,))
     cursor.execute("DELETE FROM pipelines WHERE id = %s RETURNING id;", (pipeline_id,))
     deleted = cursor.fetchone() is not None
     conn.commit()
@@ -1115,3 +1129,222 @@ def get_pipeline_run_details(run_id: str) -> dict:
     ]
 
     return run_meta
+
+
+# =========================================================
+# STAGE 8 - FEATURE 7: DATA CONTRACTS PERSISTENCE
+# =========================================================
+
+def list_data_contracts(pipeline_id: str) -> list:
+    """Retrieve all data contract rules for a given pipeline."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, pipeline_id, rule_name, column_name, is_required,
+               expected_type, allow_null, min_value, max_value, is_unique,
+               permitted_values, created_at
+        FROM data_contracts
+        WHERE pipeline_id = %s
+        ORDER BY id ASC;
+    """, (pipeline_id,))
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    results = []
+    for r in rows:
+        results.append({
+            "id": r[0],
+            "pipeline_id": r[1],
+            "rule_name": r[2],
+            "column_name": r[3],
+            "is_required": bool(r[4]),
+            "expected_type": r[5],
+            "allow_null": bool(r[6]),
+            "min_value": float(r[7]) if r[7] is not None else None,
+            "max_value": float(r[8]) if r[8] is not None else None,
+            "is_unique": bool(r[9]),
+            "permitted_values": r[10] if isinstance(r[10], list) else [],
+            "created_at": r[11].isoformat() if r[11] else None,
+        })
+    return results
+
+
+def get_data_contract(contract_id: int):
+    """Retrieve a single contract rule by ID."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, pipeline_id, rule_name, column_name, is_required,
+               expected_type, allow_null, min_value, max_value, is_unique,
+               permitted_values, created_at
+        FROM data_contracts
+        WHERE id = %s;
+    """, (contract_id,))
+    r = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if not r:
+        return None
+    return {
+        "id": r[0],
+        "pipeline_id": r[1],
+        "rule_name": r[2],
+        "column_name": r[3],
+        "is_required": bool(r[4]),
+        "expected_type": r[5],
+        "allow_null": bool(r[6]),
+        "min_value": float(r[7]) if r[7] is not None else None,
+        "max_value": float(r[8]) if r[8] is not None else None,
+        "is_unique": bool(r[9]),
+        "permitted_values": r[10] if isinstance(r[10], list) else [],
+        "created_at": r[11].isoformat() if r[11] else None,
+    }
+
+
+def create_data_contract(pipeline_id: str, rule: dict) -> dict:
+    """Create a new data contract rule for a pipeline."""
+    import json
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    rule_name = (rule.get("rule_name") or f"Contract Rule ({rule.get('column_name', '')})").strip()
+    column_name = (rule.get("column_name") or "").strip()
+    if not column_name:
+        cursor.close()
+        conn.close()
+        raise ValueError("Column name cannot be empty for a contract rule.")
+
+    is_required = bool(rule.get("is_required", True))
+    expected_type = (rule.get("expected_type") or "any").strip().lower()
+    allow_null = bool(rule.get("allow_null", True))
+    min_value = rule.get("min_value")
+    max_value = rule.get("max_value")
+    is_unique = bool(rule.get("is_unique", False))
+    permitted_values = json.dumps(rule.get("permitted_values") or [])
+
+    cursor.execute("""
+        INSERT INTO data_contracts (
+            pipeline_id, rule_name, column_name, is_required,
+            expected_type, allow_null, min_value, max_value,
+            is_unique, permitted_values, created_at
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, CURRENT_TIMESTAMP
+        )
+        RETURNING id, pipeline_id, rule_name, column_name, is_required,
+                  expected_type, allow_null, min_value, max_value, is_unique,
+                  permitted_values, created_at;
+    """, (
+        pipeline_id, rule_name, column_name, is_required,
+        expected_type, allow_null, min_value, max_value,
+        is_unique, permitted_values
+    ))
+    r = cursor.fetchone()
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return {
+        "id": r[0],
+        "pipeline_id": r[1],
+        "rule_name": r[2],
+        "column_name": r[3],
+        "is_required": bool(r[4]),
+        "expected_type": r[5],
+        "allow_null": bool(r[6]),
+        "min_value": float(r[7]) if r[7] is not None else None,
+        "max_value": float(r[8]) if r[8] is not None else None,
+        "is_unique": bool(r[9]),
+        "permitted_values": r[10] if isinstance(r[10], list) else [],
+        "created_at": r[11].isoformat() if r[11] else None,
+    }
+
+
+def update_data_contract(contract_id: int, rule: dict) -> dict:
+    """Update an existing data contract rule."""
+    import json
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    existing = get_data_contract(contract_id)
+    if not existing:
+        cursor.close()
+        conn.close()
+        raise ValueError(f"Data contract rule with ID {contract_id} not found.")
+
+    rule_name = (rule.get("rule_name") or existing["rule_name"]).strip()
+    column_name = (rule.get("column_name") or existing["column_name"]).strip()
+    is_required = bool(rule.get("is_required", existing["is_required"]))
+    expected_type = (rule.get("expected_type") or existing["expected_type"]).strip().lower()
+    allow_null = bool(rule.get("allow_null", existing["allow_null"]))
+    min_value = rule.get("min_value") if "min_value" in rule else existing["min_value"]
+    max_value = rule.get("max_value") if "max_value" in rule else existing["max_value"]
+    is_unique = bool(rule.get("is_unique", existing["is_unique"]))
+    permitted_values = json.dumps(rule.get("permitted_values") if "permitted_values" in rule else existing["permitted_values"])
+
+    cursor.execute("""
+        UPDATE data_contracts SET
+            rule_name = %s,
+            column_name = %s,
+            is_required = %s,
+            expected_type = %s,
+            allow_null = %s,
+            min_value = %s,
+            max_value = %s,
+            is_unique = %s,
+            permitted_values = %s::jsonb
+        WHERE id = %s
+        RETURNING id, pipeline_id, rule_name, column_name, is_required,
+                  expected_type, allow_null, min_value, max_value, is_unique,
+                  permitted_values, created_at;
+    """, (
+        rule_name, column_name, is_required, expected_type,
+        allow_null, min_value, max_value, is_unique,
+        permitted_values, contract_id
+    ))
+    r = cursor.fetchone()
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return {
+        "id": r[0],
+        "pipeline_id": r[1],
+        "rule_name": r[2],
+        "column_name": r[3],
+        "is_required": bool(r[4]),
+        "expected_type": r[5],
+        "allow_null": bool(r[6]),
+        "min_value": float(r[7]) if r[7] is not None else None,
+        "max_value": float(r[8]) if r[8] is not None else None,
+        "is_unique": bool(r[9]),
+        "permitted_values": r[10] if isinstance(r[10], list) else [],
+        "created_at": r[11].isoformat() if r[11] else None,
+    }
+
+
+def delete_data_contract(contract_id: int) -> bool:
+    """Delete a data contract rule by ID."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM data_contracts WHERE id = %s RETURNING id;", (contract_id,))
+    deleted = cursor.fetchone() is not None
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return deleted
+
+
+def save_pipeline_contracts(pipeline_id: str, rules: list) -> list:
+    """Bulk save/sync data contract rules for a pipeline."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM data_contracts WHERE pipeline_id = %s;", (pipeline_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    saved_rules = []
+    for r in rules:
+        saved_rules.append(create_data_contract(pipeline_id, r))
+    return saved_rules

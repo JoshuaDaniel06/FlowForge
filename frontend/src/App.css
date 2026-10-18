@@ -6561,3 +6561,230 @@ body {
   max-height: 200px;
   overflow-y: auto;
 }
+
+/* =========================================================
+   STAGE 8 - FEATURE 7: DATA CONTRACTS STYLING
+========================================================= */
+
+.contract-banner-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.contract-banner-summary.passed {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+}
+
+.contract-banner-summary.warning {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+}
+
+.contract-banner-summary.failed {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+}
+
+.contract-rule-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  transition: all 0.15s ease;
+}
+
+.contract-rule-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+}
+
+.contract-rule-info {
+  flex: 1;
+}
+
+.contract-rule-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.contract-rule-title-row strong {
+  font-size: 14px;
+  color: #1e293b;
+}
+
+.contract-rule-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.contract-rule-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.contract-rule-tag.required {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.contract-rule-tag.optional {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.contract-rule-tag.type {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.contract-rule-tag.unique {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.contract-rule-tag.range {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.contract-rule-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.contract-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.contract-status-badge.passed {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.contract-status-badge.warning {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.contract-status-badge.failed {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.contract-rule-form {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+
+.contract-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.contract-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.contract-form-group label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.contract-form-group input[type="text"],
+.contract-form-group input[type="number"],
+.contract-form-group select {
+  padding: 8px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #ffffff;
+  color: #1e293b;
+  outline: none;
+}
+
+.contract-form-group input:focus,
+.contract-form-group select:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.contract-form-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-top: 6px;
+}
+
+.contract-form-checkbox-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #334155;
+  cursor: pointer;
+}
+
+.contract-table-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.contract-workbench-panel {
+  margin-bottom: 24px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 18px 24px;
+}
+
+.contract-workbench-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}

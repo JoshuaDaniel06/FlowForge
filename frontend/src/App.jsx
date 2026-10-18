@@ -3016,6 +3016,632 @@ function SavedPipelinesPage({ onOpenPipeline, onNewPipeline }) {
 
 
 /* =========================================================
+   STAGE 8: DATA CONTRACT MODAL & INPUT VALIDATION
+========================================================= */
+
+function DataContractModal({
+  isOpen,
+  onClose,
+  pipelineId,
+  pipelineName,
+  availableColumns = [],
+  records = null,
+  errorPolicy = "stop_on_error",
+  onRulesUpdated,
+  onContinueExecution,
+}) {
+  const [rules, setRules] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isValidating, setIsValidating] = useState(false);
+  const [validationResult, setValidationResult] = useState(null);
+  const [isEditingRule, setIsEditingRule] = useState(false);
+  const [editingRuleId, setEditingRuleId] = useState(null);
+
+  // Form states
+  const [formRuleName, setFormRuleName] = useState("");
+  const [formColumnName, setFormColumnName] = useState("");
+  const [formIsRequired, setFormIsRequired] = useState(true);
+  const [formExpectedType, setFormExpectedType] = useState("string");
+  const [formAllowNull, setFormAllowNull] = useState(true);
+  const [formMinValue, setFormMinValue] = useState("");
+  const [formMaxValue, setFormMaxValue] = useState("");
+  const [formIsUnique, setFormIsUnique] = useState(false);
+  const [formPermittedValues, setFormPermittedValues] = useState("");
+  const [banner, setBanner] = useState(null);
+
+  const fetchRules = async () => {
+    if (!pipelineId) return;
+    setIsLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/${pipelineId}/contracts`);
+      if (res.ok) {
+        const data = await res.json();
+        const loadedRules = data.rules || [];
+        setRules(loadedRules);
+        if (onRulesUpdated) onRulesUpdated(loadedRules);
+      }
+    } catch (err) {
+      console.error(err);
+      setBanner({ type: "danger", text: "Failed to load contract rules from database." });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchRules();
+      setValidationResult(null);
+      setIsEditingRule(false);
+      setBanner(null);
+    }
+  }, [isOpen, pipelineId]);
+
+  const handleOpenAddRule = () => {
+    setEditingRuleId(null);
+    setFormRuleName("");
+    setFormColumnName(availableColumns[0] || "email");
+    setFormIsRequired(true);
+    setFormExpectedType("string");
+    setFormAllowNull(true);
+    setFormMinValue("");
+    setFormMaxValue("");
+    setFormIsUnique(false);
+    setFormPermittedValues("");
+    setIsEditingRule(true);
+    setBanner(null);
+  };
+
+  const handleOpenEditRule = (rule) => {
+    setEditingRuleId(rule.id);
+    setFormRuleName(rule.rule_name || "");
+    setFormColumnName(rule.column_name || "");
+    setFormIsRequired(rule.is_required ?? true);
+    setFormExpectedType(rule.expected_type || "string");
+    setFormAllowNull(rule.allow_null ?? true);
+    setFormMinValue(rule.min_value !== null && rule.min_value !== undefined ? String(rule.min_value) : "");
+    setFormMaxValue(rule.max_value !== null && rule.max_value !== undefined ? String(rule.max_value) : "");
+    setFormIsUnique(Boolean(rule.is_unique));
+    setFormPermittedValues(Array.isArray(rule.permitted_values) ? rule.permitted_values.join(", ") : "");
+    setIsEditingRule(true);
+    setBanner(null);
+  };
+
+  const handleSaveRule = async (e) => {
+    e.preventDefault();
+    if (!formColumnName.trim()) {
+      setBanner({ type: "danger", text: "Column name is required." });
+      return;
+    }
+
+    const permittedList = formPermittedValues
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const rulePayload = {
+      rule_name: formRuleName.trim() || `Rule: ${formColumnName.trim()}`,
+      column_name: formColumnName.trim(),
+      is_required: formIsRequired,
+      expected_type: formExpectedType,
+      allow_null: formAllowNull,
+      min_value: formMinValue !== "" ? parseFloat(formMinValue) : null,
+      max_value: formMaxValue !== "" ? parseFloat(formMaxValue) : null,
+      is_unique: formIsUnique,
+      permitted_values: permittedList,
+    };
+
+    try {
+      let res;
+      if (editingRuleId) {
+        res = await fetch(`${API_URL}/pipelines/${pipelineId}/contracts/${editingRuleId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(rulePayload),
+        });
+      } else {
+        res = await fetch(`${API_URL}/pipelines/${pipelineId}/contracts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(rulePayload),
+        });
+      }
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || "Failed to save contract rule.");
+      }
+
+      setBanner({ type: "success", text: `Rule '${rulePayload.rule_name}' saved successfully.` });
+      setIsEditingRule(false);
+      fetchRules();
+    } catch (err) {
+      setBanner({ type: "danger", text: err.message });
+    }
+  };
+
+  const handleDeleteRule = async (ruleId) => {
+    if (!confirm("Are you sure you want to remove this contract rule?")) return;
+    try {
+      const res = await fetch(`${API_URL}/pipelines/${pipelineId}/contracts/${ruleId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        setBanner({ type: "success", text: "Rule removed successfully." });
+        fetchRules();
+      } else {
+        throw new Error("Failed to delete rule.");
+      }
+    } catch (err) {
+      setBanner({ type: "danger", text: err.message });
+    }
+  };
+
+  const handleValidateContract = async () => {
+    setIsValidating(true);
+    setBanner(null);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/${pipelineId}/contracts/validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rules: rules,
+          records: records || null,
+          error_policy: errorPolicy,
+        }),
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || "Validation request failed.");
+      }
+      const data = await res.json();
+      setValidationResult(data.validation);
+    } catch (err) {
+      setBanner({ type: "danger", text: err.message });
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
+  const handleDownloadResults = () => {
+    if (!validationResult) return;
+    const reportData = {
+      pipeline_id: pipelineId,
+      pipeline_name: pipelineName,
+      timestamp: new Date().toISOString(),
+      overall_status: validationResult.status,
+      summary: validationResult.summary,
+      total_rules: validationResult.total_rules,
+      passed_count: validationResult.passed_count,
+      warning_count: validationResult.warning_count,
+      failed_count: validationResult.failed_count,
+      can_continue: validationResult.can_continue,
+      has_hard_failure: validationResult.has_hard_failure,
+      results: validationResult.rule_results,
+    };
+    const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `data_contract_validation_${pipelineId || "report"}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="cleaned-customer-overlay" onClick={onClose}>
+      <div
+        className="cleaned-customer-modal"
+        style={{ maxWidth: "880px", maxHeight: "90vh", display: "flex", flexDirection: "column" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="cleaned-customer-modal-header">
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <FileCheck2 size={20} color="#2563eb" />
+            <div>
+              <h3 style={{ margin: 0 }}>Data Contract & Input Validation</h3>
+              <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>
+                Pipeline: <strong>{pipelineName || pipelineId}</strong> ({rules.length} rule{rules.length !== 1 ? "s" : ""})
+              </p>
+            </div>
+          </div>
+          <button type="button" onClick={onClose}>×</button>
+        </div>
+
+        <div className="pipeline-modal-body" style={{ padding: "16px 20px", overflowY: "auto", flex: 1 }}>
+          {banner && (
+            <div
+              className={`pipeline-alert ${banner.type}`}
+              style={{
+                padding: "10px 14px",
+                borderRadius: "6px",
+                marginBottom: "14px",
+                fontSize: "12px",
+                background: banner.type === "danger" ? "#fef2f2" : "#f0fdf4",
+                color: banner.type === "danger" ? "#991b1b" : "#166534",
+                border: `1px solid ${banner.type === "danger" ? "#fecaca" : "#bbf7d0"}`,
+              }}
+            >
+              {banner.text}
+            </div>
+          )}
+
+          {/* Validation summary banner if validation was run */}
+          {validationResult && (
+            <div className={`contract-banner-summary ${validationResult.status}`}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                {validationResult.status === "passed" ? (
+                  <CheckCircle2 size={18} color="#15803d" />
+                ) : validationResult.status === "warning" ? (
+                  <AlertTriangle size={18} color="#b45309" />
+                ) : (
+                  <XCircle size={18} color="#b91c1c" />
+                )}
+                <span>
+                  <strong>Contract Status: {validationResult.status.toUpperCase()}</strong> — {validationResult.summary}
+                </span>
+              </div>
+              <div>
+                <span style={{ fontSize: "12px", opacity: 0.9 }}>
+                  Can proceed: <strong>{validationResult.can_continue ? "YES" : "NO"}</strong>
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Add / Edit Rule Form */}
+          {isEditingRule ? (
+            <form className="contract-rule-form" onSubmit={handleSaveRule}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+                <h4 style={{ margin: 0, fontSize: "13px", color: "#1e293b" }}>
+                  {editingRuleId ? "Edit Contract Rule" : "Add New Contract Rule"}
+                </h4>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  style={{ fontSize: "11px", padding: "4px 8px" }}
+                  onClick={() => setIsEditingRule(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+
+              <div className="contract-form-grid">
+                <div className="contract-form-group">
+                  <label>Rule Name</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Require Non-Null Email"
+                    value={formRuleName}
+                    onChange={(e) => setFormRuleName(e.target.value)}
+                  />
+                </div>
+
+                <div className="contract-form-group">
+                  <label>Target Column *</label>
+                  <select
+                    value={formColumnName}
+                    onChange={(e) => setFormColumnName(e.target.value)}
+                  >
+                    <option value="">-- Select Column --</option>
+                    {availableColumns.map((col) => (
+                      <option key={col} value={col}>{col}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="contract-form-group">
+                  <label>Expected Type</label>
+                  <select
+                    value={formExpectedType}
+                    onChange={(e) => setFormExpectedType(e.target.value)}
+                  >
+                    <option value="string">string (text)</option>
+                    <option value="integer">integer</option>
+                    <option value="float">float / number</option>
+                    <option value="boolean">boolean</option>
+                    <option value="datetime">datetime</option>
+                    <option value="any">any</option>
+                  </select>
+                </div>
+
+                <div className="contract-form-group">
+                  <label>Numeric Range (Min / Max)</label>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <input
+                      type="number"
+                      placeholder="Min"
+                      value={formMinValue}
+                      onChange={(e) => setFormMinValue(e.target.value)}
+                    />
+                    <input
+                      type="number"
+                      placeholder="Max"
+                      value={formMaxValue}
+                      onChange={(e) => setFormMaxValue(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="contract-form-group" style={{ gridColumn: "1 / -1" }}>
+                  <label>Permitted Values (comma separated)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Chennai, Madurai, Coimbatore, Bangalore"
+                    value={formPermittedValues}
+                    onChange={(e) => setFormPermittedValues(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="contract-form-checkbox-row">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={formIsRequired}
+                    onChange={(e) => setFormIsRequired(e.target.checked)}
+                  />
+                  Required Column (Missing column halts pipeline)
+                </label>
+
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={formAllowNull}
+                    onChange={(e) => setFormAllowNull(e.target.checked)}
+                  />
+                  Allow Null Values
+                </label>
+
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={formIsUnique}
+                    onChange={(e) => setFormIsUnique(e.target.checked)}
+                  />
+                  Must Be Unique
+                </label>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "14px" }}>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setIsEditingRule(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="primary-button"
+                >
+                  {editingRuleId ? "Update Rule" : "Save Rule"}
+                </button>
+              </div>
+            </form>
+          ) : null}
+
+          {/* Validation Results Table */}
+          {validationResult && (
+            <div style={{ marginBottom: "20px" }}>
+              <div className="contract-table-header">
+                <h4 style={{ margin: 0, fontSize: "13px", color: "#1e293b" }}>
+                  Validation Results ({validationResult.rule_results.length})
+                </h4>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  style={{ fontSize: "11px", padding: "4px 8px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                  onClick={handleDownloadResults}
+                >
+                  <Download size={13} /> Download Validation Results
+                </button>
+              </div>
+
+              <div className="table-wrapper">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Rule</th>
+                      <th>Column</th>
+                      <th>Status</th>
+                      <th>Affected Rows</th>
+                      <th>Explanation</th>
+                      <th>Can Continue</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {validationResult.rule_results.map((r, i) => (
+                      <tr key={r.rule_id || i}>
+                        <td><strong>{r.rule_name}</strong></td>
+                        <td><code>{r.column}</code></td>
+                        <td>
+                          <span className={`contract-status-badge ${r.status}`}>
+                            {r.status}
+                          </span>
+                        </td>
+                        <td>{r.affected_rows}</td>
+                        <td style={{ fontSize: "12px", color: r.status === "failed" ? "#991b1b" : "#475569" }}>
+                          {r.explanation}
+                        </td>
+                        <td>
+                          <span style={{ fontWeight: 600, color: r.can_continue ? "#15803d" : "#b91c1c" }}>
+                            {r.can_continue ? "Yes" : "No"}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Rules Configuration List */}
+          <div>
+            <div className="contract-table-header">
+              <h4 style={{ margin: 0, fontSize: "13px", color: "#1e293b" }}>
+                Configured Contract Rules ({rules.length})
+              </h4>
+              {!isEditingRule && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  style={{ fontSize: "12px", padding: "5px 10px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                  onClick={handleOpenAddRule}
+                >
+                  <Plus size={13} /> Add Rule
+                </button>
+              )}
+            </div>
+
+            {isLoading ? (
+              <p style={{ textAlign: "center", color: "#64748b", padding: "20px" }}>Loading contract rules...</p>
+            ) : rules.length > 0 ? (
+              <div className="contract-rule-grid">
+                {rules.map((rule) => (
+                  <div key={rule.id} className="contract-rule-card">
+                    <div className="contract-rule-info">
+                      <div className="contract-rule-title-row">
+                        <strong>{rule.rule_name}</strong>
+                        <span style={{ fontSize: "12px", color: "#64748b" }}>
+                          column: <code>{rule.column_name}</code>
+                        </span>
+                      </div>
+                      <div className="contract-rule-tags">
+                        <span className={`contract-rule-tag ${rule.is_required ? "required" : "optional"}`}>
+                          {rule.is_required ? "Required Column" : "Optional Column"}
+                        </span>
+                        <span className="contract-rule-tag type">
+                          Type: {rule.expected_type || "any"}
+                        </span>
+                        <span className="contract-rule-tag">
+                          {rule.allow_null ? "Allows Null" : "Disallow Null"}
+                        </span>
+                        {rule.is_unique && (
+                          <span className="contract-rule-tag unique">
+                            Unique Required
+                          </span>
+                        )}
+                        {(rule.min_value !== null || rule.max_value !== null) && (
+                          <span className="contract-rule-tag range">
+                            Range: [{rule.min_value !== null ? rule.min_value : "-∞"}, {rule.max_value !== null ? rule.max_value : "+∞"}]
+                          </span>
+                        )}
+                        {rule.permitted_values?.length > 0 && (
+                          <span className="contract-rule-tag">
+                            Permitted: {rule.permitted_values.join(", ")}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="contract-rule-actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        style={{ fontSize: "11px", padding: "4px 8px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                        onClick={() => handleOpenEditRule(rule)}
+                        title="Edit Rule"
+                      >
+                        <Edit2 size={12} /> Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        style={{ fontSize: "11px", padding: "4px 8px", color: "#dc2626", borderColor: "#fecaca", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                        onClick={() => handleDeleteRule(rule.id)}
+                        title="Remove Rule"
+                      >
+                        <Trash2 size={12} /> Remove
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ textAlign: "center", padding: "24px", background: "#f8fafc", borderRadius: "8px", border: "1px dashed #cbd5e1" }}>
+                <FileCheck2 size={24} color="#94a3b8" />
+                <p style={{ margin: "8px 0 12px 0", fontSize: "13px", color: "#64748b" }}>
+                  No contract rules defined for this pipeline yet.
+                </p>
+                <button
+                  type="button"
+                  className="primary-button"
+                  style={{ fontSize: "12px", padding: "6px 14px" }}
+                  onClick={handleOpenAddRule}
+                >
+                  <Plus size={13} /> Add First Rule
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="pipeline-modal-footer" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 20px", borderTop: "1px solid #e2e8f0" }}>
+          <div>
+            {validationResult && (
+              <button
+                type="button"
+                className="secondary-button"
+                style={{ fontSize: "12px", padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: "6px" }}
+                onClick={handleDownloadResults}
+              >
+                <Download size={14} /> Download Validation Results
+              </button>
+            )}
+          </div>
+
+          <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+            {/* Only add Continue Anyway if execution policy explicitly allows warnings and rule is not a hard failure */}
+            {validationResult &&
+              validationResult.status === "warning" &&
+              errorPolicy === "continue_on_warning" &&
+              !validationResult.has_hard_failure && (
+                <button
+                  type="button"
+                  className="primary-button"
+                  style={{ background: "#d97706", borderColor: "#d97706", display: "inline-flex", alignItems: "center", gap: "6px" }}
+                  onClick={() => {
+                    onClose();
+                    if (onContinueExecution) onContinueExecution();
+                  }}
+                  title="Execution policy permits continuing with warnings"
+                >
+                  <Play size={14} /> Continue Anyway
+                </button>
+              )}
+
+            <button
+              type="button"
+              className="primary-button"
+              style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+              onClick={handleValidateContract}
+              disabled={isValidating || rules.length === 0}
+            >
+              <Check size={14} /> {isValidating ? "Validating..." : "Validate Contract"}
+            </button>
+
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={onClose}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/* =========================================================
    PIPELINE WORKBENCH PAGE (STAGE 2)
 ========================================================= */
 
@@ -3085,6 +3711,30 @@ function PipelineWorkbenchPage({
 
   // STAGE 7: Pipeline Versioning Modal State
   const [versionsModalOpen, setVersionsModalOpen] = useState(false);
+
+  // STAGE 8: Data Contract Modal & Validation State
+  const [contractModalOpen, setContractModalOpen] = useState(false);
+  const [contractRules, setContractRules] = useState([]);
+  const [contractValidation, setContractValidation] = useState(null);
+
+  const loadContractRules = async (pId) => {
+    if (!pId) return;
+    try {
+      const res = await fetch(`${API_URL}/pipelines/${pId}/contracts`);
+      if (res.ok) {
+        const data = await res.json();
+        setContractRules(data.rules || []);
+      }
+    } catch (e) {
+      console.error("Failed to load contract rules:", e);
+    }
+  };
+
+  useEffect(() => {
+    if (pipelineId) {
+      loadContractRules(pipelineId);
+    }
+  }, [pipelineId]);
 
   useEffect(() => {
     fetch(`${API_URL}/db/tables`)
@@ -3219,6 +3869,8 @@ function PipelineWorkbenchPage({
     setSelectedSavedId("");
     setSteps([]);
     setValidationResult(null);
+    setContractRules([]);
+    setContractValidation(null);
     setBannerMessage("Created new pipeline draft.");
   };
 
@@ -3240,6 +3892,7 @@ function PipelineWorkbenchPage({
         setStatus("saved");
         setSelectedSavedId(p.id);
         setValidationResult(null);
+        loadContractRules(p.id);
         setBannerMessage(`Loaded pipeline '${p.name}'.`);
       }
     } catch (err) {
@@ -3946,6 +4599,14 @@ function PipelineWorkbenchPage({
                 <Folder size={15} /> Saved Pipelines
               </button>
             )}
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => setContractModalOpen(true)}
+              title="Validate input dataset schema and quality contracts before transformations run"
+            >
+              <FileCheck2 size={15} /> Validate Input (Data Contract)
+            </button>
           </div>
 
           <div className="pipeline-actions-right">
@@ -3966,6 +4627,49 @@ function PipelineWorkbenchPage({
               disabled={isExecuting || steps.length === 0}
             >
               <Play size={15} /> {isExecuting ? "Executing..." : "Run Pipeline"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* INPUT DATA CONTRACT PANEL (STAGE 8 - FEATURE 7) */}
+      <div className="contract-workbench-panel">
+        <div className="contract-workbench-header">
+          <div>
+            <h4 style={{ display: "flex", alignItems: "center", gap: "8px", margin: "0 0 4px 0", fontSize: "14px", color: "#1e293b" }}>
+              <FileCheck2 size={16} color="#2563eb" />
+              Input Data Contract
+              {contractRules.length > 0 && (
+                <span className="pipeline-version-badge" style={{ background: "#f1f5f9", color: "#475569" }}>
+                  {contractRules.length} rule{contractRules.length !== 1 ? "s" : ""}
+                </span>
+              )}
+              {contractValidation && (
+                <span className={`contract-status-badge ${contractValidation.status}`}>
+                  {contractValidation.status.toUpperCase()}
+                </span>
+              )}
+            </h4>
+            <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>
+              Validate input dataset schema, required columns, expected types, nullability, uniqueness, and value bounds before transformations execute.
+            </p>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <button
+              type="button"
+              className="secondary-button"
+              style={{ fontSize: "12px", padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: "5px" }}
+              onClick={() => setContractModalOpen(true)}
+            >
+              <Sliders size={13} /> Rules ({contractRules.length})
+            </button>
+            <button
+              type="button"
+              className="primary-button"
+              style={{ fontSize: "12px", padding: "6px 14px", display: "inline-flex", alignItems: "center", gap: "5px" }}
+              onClick={() => setContractModalOpen(true)}
+            >
+              <Check size={13} /> Validate Input
             </button>
           </div>
         </div>
@@ -4146,6 +4850,23 @@ function PipelineWorkbenchPage({
             setBannerMessage(res.message || `Restored pipeline to new Version ${res.new_version}.`);
           }
           loadSavedPipelines();
+        }}
+      />
+
+      {/* DATA CONTRACT MODAL (STAGE 8 - FEATURE 7) */}
+      <DataContractModal
+        isOpen={contractModalOpen}
+        onClose={() => setContractModalOpen(false)}
+        pipelineId={pipelineId}
+        pipelineName={name}
+        availableColumns={availableColumns}
+        records={result?.records}
+        errorPolicy={errorPolicy}
+        onRulesUpdated={(updatedRules) => {
+          setContractRules(updatedRules);
+        }}
+        onContinueExecution={() => {
+          handleExecuteWorkflow();
         }}
       />
     </div>

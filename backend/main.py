@@ -13,18 +13,23 @@ from psycopg2 import sql
 from pydantic import BaseModel
 
 from backend.data_quality import analyze_data
+from backend.data_contracts import validate_data_contract
 from backend.database import (
     check_connection,
+    create_data_contract,
     create_pipeline_run,
+    delete_data_contract,
     delete_pipeline,
     duplicate_pipeline,
     finish_pipeline_run,
     get_connection,
+    get_data_contract,
     get_pipeline,
     get_pipeline_run_details,
     get_pipeline_version,
     get_public_tables,
     init_db,
+    list_data_contracts,
     list_pipeline_runs,
     list_pipeline_versions,
     list_pipelines,
@@ -33,7 +38,9 @@ from backend.database import (
     rename_pipeline,
     restore_pipeline_version,
     save_pipeline,
+    save_pipeline_contracts,
     save_pipeline_version,
+    update_data_contract,
     validate_destination_mapping,
     write_dataframe_to_postgres,
 )
@@ -64,6 +71,25 @@ class PipelinePayload(BaseModel):
     error_policy: Optional[str] = "stop_on_error"
     version: Optional[int] = 1
     status: Optional[str] = "saved"
+    data_contract: Optional[List[Dict[str, Any]]] = None
+
+
+class DataContractRulePayload(BaseModel):
+    rule_name: Optional[str] = None
+    column_name: str
+    is_required: Optional[bool] = True
+    expected_type: Optional[str] = "string"
+    allow_null: Optional[bool] = True
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    is_unique: Optional[bool] = False
+    permitted_values: Optional[List[Any]] = []
+
+
+class ContractValidationPayload(BaseModel):
+    rules: Optional[List[Dict[str, Any]]] = None
+    records: Optional[List[Dict[str, Any]]] = None
+    error_policy: Optional[str] = "stop_on_error"
 
 
 class StepPreviewPayload(BaseModel):
@@ -84,6 +110,7 @@ class PipelineExecutionPayload(BaseModel):
     pipeline_id: Optional[str] = None
     pipeline: Optional[PipelinePayload] = None
     records: Optional[List[Dict[str, Any]]] = None
+    data_contract: Optional[List[Dict[str, Any]]] = None
 
 
 class ValidateMappingPayload(BaseModel):
@@ -746,8 +773,109 @@ def restore_version_endpoint(pipeline_id: str, version: int):
         return res
     except ValueError as ve:
         raise HTTPException(status_code=404, detail=str(ve))
+# ==========================================
+# DATA CONTRACTS ENDPOINTS (STAGE 8 - FEATURE 7)
+# ==========================================
+
+@app.get("/pipelines/{pipeline_id}/contracts")
+def get_pipeline_data_contracts(pipeline_id: str):
+    """
+    Retrieve all data contract rules configured for a pipeline.
+    """
+    try:
+        rules = list_data_contracts(pipeline_id)
+        return {
+            "status": "success",
+            "pipeline_id": pipeline_id,
+            "total_rules": len(rules),
+            "contracts": rules,
+            "rules": rules,
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to restore version: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve data contracts: {e}")
+
+
+@app.post("/pipelines/{pipeline_id}/contracts")
+def add_pipeline_data_contract(pipeline_id: str, rule: DataContractRulePayload):
+    """
+    Add a new contract rule for a pipeline in PostgreSQL.
+    """
+    try:
+        created = create_data_contract(pipeline_id, rule.dict())
+        return {
+            "status": "success",
+            "message": f"Contract rule '{created['rule_name']}' created successfully.",
+            "rule": created,
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create contract rule: {e}")
+
+
+@app.put("/pipelines/{pipeline_id}/contracts/{rule_id}")
+def update_pipeline_data_contract(pipeline_id: str, rule_id: int, rule: DataContractRulePayload):
+    """
+    Update an existing contract rule in PostgreSQL.
+    """
+    try:
+        updated = update_data_contract(rule_id, rule.dict())
+        return {
+            "status": "success",
+            "message": f"Contract rule '{updated['rule_name']}' updated successfully.",
+            "rule": updated,
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update contract rule: {e}")
+
+
+@app.delete("/pipelines/{pipeline_id}/contracts/{rule_id}")
+def delete_pipeline_data_contract(pipeline_id: str, rule_id: int):
+    """
+    Delete a contract rule from PostgreSQL.
+    """
+    try:
+        deleted = delete_data_contract(rule_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Contract rule not found.")
+        return {"status": "success", "message": "Contract rule removed successfully."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete contract rule: {e}")
+
+
+@app.post("/pipelines/{pipeline_id}/contracts/validate")
+def validate_pipeline_contract_endpoint(pipeline_id: str, payload: Optional[ContractValidationPayload] = None):
+    """
+    Validate the input dataset against a pipeline's data contract rules.
+    """
+    try:
+        rules = payload.rules if payload and payload.rules is not None else list_data_contracts(pipeline_id)
+        records = payload.records if payload else None
+        error_policy = payload.error_policy if payload and payload.error_policy else "stop_on_error"
+
+        df = _get_base_dataframe(records)
+        result = validate_data_contract(df, rules, error_policy=error_policy)
+        return {"status": "success", "pipeline_id": pipeline_id, "validation": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Contract validation failed: {e}")
+
+
+@app.post("/contracts/validate")
+def validate_standalone_contract(payload: ContractValidationPayload):
+    """
+    Standalone validation of dataset records against arbitrary contract rules.
+    """
+    try:
+        df = _get_base_dataframe(payload.records)
+        rules = payload.rules or []
+        result = validate_data_contract(df, rules, error_policy=payload.error_policy or "stop_on_error")
+        return {"status": "success", "validation": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Contract validation failed: {e}")
 
 
 @app.post("/pipelines/validate")
@@ -1050,6 +1178,62 @@ def execute_pipeline_workflow(payload: PipelineExecutionPayload):
         print(f"Warning: Failed to create initial run record: {run_init_err}")
         run_id = f"run_{int(time.time() * 1000)}"
 
+    # 3.5. STAGE 8: Data contract pre-transformation validation
+    contract_rules = payload.data_contract or pipeline_def.get("data_contract")
+    if not contract_rules and pipeline_id:
+        try:
+            contract_rules = list_data_contracts(pipeline_id)
+        except Exception:
+            contract_rules = []
+
+    contract_validation = None
+    if contract_rules:
+        contract_validation = validate_data_contract(df, contract_rules, error_policy=error_policy)
+        if not contract_validation["can_continue"]:
+            err_msg = f"Data contract validation failed: {contract_validation['summary']}"
+            try:
+                finish_pipeline_run(run_id, {
+                    "status": "failed",
+                    "duration_ms": 0,
+                    "output_rows": 0,
+                    "completed_steps": 0,
+                    "failed_steps": 0,
+                    "destination_status": "Blocked by data contract violation",
+                    "destination_table": destination.get("table", "customers"),
+                    "error_message": err_msg,
+                }, [])
+            except Exception as fin_err:
+                print(f"Warning: Failed to finish run record: {fin_err}")
+
+            run_details = None
+            try:
+                run_details = get_pipeline_run_details(run_id)
+            except Exception:
+                pass
+
+            return {
+                "status": "failed",
+                "run_id": run_id,
+                "run": run_details,
+                "started_at": None,
+                "completed_at": None,
+                "duration_ms": 0,
+                "input_rows": input_rows,
+                "output_rows": 0,
+                "completed_steps": 0,
+                "failed_steps": 0,
+                "destination_status": "Blocked by data contract violation",
+                "destination_table": destination.get("table", "customers"),
+                "records_loaded": 0,
+                "failing_step": None,
+                "error_message": err_msg,
+                "summary": {"total_steps": len(steps), "completed": 0, "failed": 0},
+                "step_telemetry": [],
+                "contract_validation": contract_validation,
+                "records": [],
+                "columns": list(df.columns),
+            }
+
     # 4. Execute transformations
     try:
         final_df, step_telemetry, summary = execute_pipeline_transformations(
@@ -1159,6 +1343,7 @@ def execute_pipeline_workflow(payload: PipelineExecutionPayload):
         "step_telemetry": step_telemetry,
         "records": dataframe_to_records(final_df.head(100)),
         "columns": list(final_df.columns),
+        "contract_validation": contract_validation,
     }
 
 

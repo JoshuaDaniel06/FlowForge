@@ -108,8 +108,8 @@ def init_db():
             output_rows INT DEFAULT 0,
             completed_steps INT DEFAULT 0,
             failed_steps INT DEFAULT 0,
-            destination_status VARCHAR(64),
-            destination_table VARCHAR(128),
+            destination_status TEXT,
+            destination_table TEXT,
             error_message TEXT
         );
     """)
@@ -214,6 +214,290 @@ def get_public_tables():
     cursor.close()
     conn.close()
     return tables_meta
+
+
+def preview_table(table_name: str, schema: str = "public", limit: int = 25) -> dict:
+    """Safely preview records and schema from a user table in PostgreSQL."""
+    if not table_name or not table_name.isidentifier():
+        raise ValueError(f"Invalid table identifier '{table_name}'.")
+    if not schema or not schema.isidentifier():
+        raise ValueError(f"Invalid schema identifier '{schema}'.")
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # Verify table exists in schema
+    cursor.execute("""
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables 
+            WHERE table_schema = %s AND table_name = %s
+        );
+    """, (schema, table_name))
+    if not cursor.fetchone()[0]:
+        cursor.close()
+        conn.close()
+        raise ValueError(f"Table '{schema}.{table_name}' does not exist.")
+
+    # Get column metadata
+    cursor.execute("""
+        SELECT column_name, data_type, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = %s AND table_name = %s
+        ORDER BY ordinal_position;
+    """, (schema, table_name))
+    columns_meta = [{"name": r[0], "type": r[1], "nullable": r[2] == "YES"} for r in cursor.fetchall()]
+    col_names = [c["name"] for c in columns_meta]
+
+    # Count total rows
+    cursor.execute(sql.SQL("SELECT COUNT(*) FROM {}.{}").format(sql.Identifier(schema), sql.Identifier(table_name)))
+    total_rows = cursor.fetchone()[0]
+
+    # Preview sample rows
+    query = sql.SQL("SELECT * FROM {}.{} LIMIT %s").format(sql.Identifier(schema), sql.Identifier(table_name))
+    cursor.execute(query, (limit,))
+    rows = cursor.fetchall()
+    records = []
+    for r in rows:
+        rec = {}
+        for idx, col in enumerate(col_names):
+            val = r[idx]
+            rec[col] = val.isoformat() if hasattr(val, "isoformat") else val
+        records.append(rec)
+
+    cursor.close()
+    conn.close()
+    return {
+        "table_name": table_name,
+        "schema": schema,
+        "total_rows": total_rows,
+        "columns": columns_meta,
+        "records": records,
+        "limit": limit,
+    }
+
+
+def validate_destination_mapping(target_table: str, source_columns: list, schema: str = "public") -> dict:
+    """
+    Validate source columns and type compatibility against a target PostgreSQL table.
+    """
+    if not target_table or not target_table.isidentifier():
+        return {
+            "valid": False,
+            "table_exists": False,
+            "errors": [f"Invalid table identifier '{target_table}'."],
+            "warnings": [],
+            "mappings": [],
+        }
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT column_name, data_type, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = %s AND table_name = %s
+        ORDER BY ordinal_position;
+    """, (schema, target_table))
+    target_cols_meta = [{"name": r[0], "type": r[1], "nullable": r[2] == "YES"} for r in cursor.fetchall()]
+    cursor.close()
+    conn.close()
+
+    if not target_cols_meta:
+        return {
+            "valid": True,
+            "table_exists": False,
+            "notice": f"Table '{target_table}' does not exist yet. FlowForge will automatically create it with appropriate column types upon write.",
+            "errors": [],
+            "warnings": [f"Table '{target_table}' will be dynamically created on first run."],
+            "mappings": [{"source": c, "target": c, "status": "new_column"} for c in source_columns],
+        }
+
+    target_col_names = {c["name"]: c for c in target_cols_meta}
+    mappings = []
+    errors = []
+    warnings = []
+
+    for scol in source_columns:
+        if scol in target_col_names:
+            mappings.append({
+                "source": scol,
+                "target": scol,
+                "type": target_col_names[scol]["type"],
+                "status": "matched",
+            })
+        else:
+            warnings.append(f"Source column '{scol}' does not exist in target table '{target_table}' and will be ignored or added.")
+            mappings.append({
+                "source": scol,
+                "target": None,
+                "status": "unmatched_source",
+            })
+
+    # Check for non-nullable required target columns missing from source
+    for tname, tmeta in target_col_names.items():
+        if not tmeta["nullable"] and tname not in source_columns and tname != "id":
+            errors.append(f"Target table non-nullable column '{tname}' ({tmeta['type']}) is missing from source dataset.")
+
+    return {
+        "valid": len(errors) == 0,
+        "table_exists": True,
+        "target_columns": target_cols_meta,
+        "mappings": mappings,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
+def write_dataframe_to_postgres(df, table_name: str, schema: str = "public", mode: str = "append", column_mapping: dict = None) -> dict:
+    """
+    Safely write a pandas DataFrame to PostgreSQL table with atomic transaction handling.
+    Supports mode='append' or mode='replace'. Auto-creates table if missing.
+    Rolls back cleanly on any failure.
+    """
+    import numpy as np
+    import pandas as pd
+
+    if not table_name or not table_name.isidentifier():
+        raise ValueError(f"Invalid table identifier '{table_name}'.")
+    if not schema or not schema.isidentifier():
+        raise ValueError(f"Invalid schema identifier '{schema}'.")
+
+    write_df = df.copy()
+    if column_mapping:
+        write_df = write_df.rename(columns=column_mapping)
+
+    conn = get_connection()
+    conn.autocommit = False
+    cursor = conn.cursor()
+
+    try:
+        # 1. Check if table exists
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables 
+                WHERE table_schema = %s AND table_name = %s
+            );
+        """, (schema, table_name))
+        table_exists = cursor.fetchone()[0]
+
+        # Special optimization for customers table
+        if table_name == "customers" and schema == "public":
+            if mode == "replace":
+                cursor.execute("TRUNCATE TABLE customers;")
+
+            records = write_df.to_dict(orient="records")
+            for r in records:
+                cursor.execute("""
+                    INSERT INTO customers (id, name, email, age, city, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        email = EXCLUDED.email,
+                        age = EXCLUDED.age,
+                        city = EXCLUDED.city,
+                        updated_at = CURRENT_TIMESTAMP;
+                """, (
+                    r.get("id"),
+                    r.get("name"),
+                    r.get("email"),
+                    r.get("age"),
+                    r.get("city"),
+                ))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            return {
+                "status": "success",
+                "table": "customers",
+                "schema": schema,
+                "mode": mode,
+                "rows_written": len(records),
+                "rows_loaded": len(records),
+                "message": f"Successfully loaded {len(records)} records into 'customers' ({mode} mode)."
+            }
+
+        # 2. Dynamic table handling for other tables
+        if not table_exists:
+            col_defs = []
+            for col in write_df.columns:
+                if not str(col).isidentifier():
+                    raise ValueError(f"Invalid column identifier '{col}'.")
+                dtype = write_df[col].dtype
+                if pd.api.types.is_integer_dtype(dtype):
+                    pg_type = "BIGINT"
+                elif pd.api.types.is_float_dtype(dtype):
+                    pg_type = "DOUBLE PRECISION"
+                elif pd.api.types.is_bool_dtype(dtype):
+                    pg_type = "BOOLEAN"
+                elif pd.api.types.is_datetime64_any_dtype(dtype):
+                    pg_type = "TIMESTAMPTZ"
+                else:
+                    pg_type = "TEXT"
+                col_defs.append(sql.SQL("{} {}").format(sql.Identifier(str(col)), sql.SQL(pg_type)))
+
+            create_query = sql.SQL("CREATE TABLE {}.{} ({}, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);").format(
+                sql.Identifier(schema),
+                sql.Identifier(table_name),
+                sql.SQL(", ").join(col_defs)
+            )
+            cursor.execute(create_query)
+
+        elif mode == "replace":
+            cursor.execute(sql.SQL("TRUNCATE TABLE {}.{};").format(sql.Identifier(schema), sql.Identifier(table_name)))
+
+        # 3. Insert records
+        cursor.execute("""
+            SELECT column_name FROM information_schema.columns 
+            WHERE table_schema = %s AND table_name = %s;
+        """, (schema, table_name))
+        dest_columns = {r[0] for r in cursor.fetchall()}
+
+        valid_cols = [c for c in write_df.columns if str(c) in dest_columns]
+        if not valid_cols:
+            raise ValueError(f"No source columns match destination table '{table_name}'.")
+
+        cols_sql = sql.SQL(", ").join(map(sql.Identifier, [str(c) for c in valid_cols]))
+        placeholders = sql.SQL(", ").join([sql.SQL("%s")] * len(valid_cols))
+        insert_sql = sql.SQL("INSERT INTO {}.{} ({}) VALUES ({});").format(
+            sql.Identifier(schema),
+            sql.Identifier(table_name),
+            cols_sql,
+            placeholders
+        )
+
+        records = []
+        for _, row in write_df[valid_cols].iterrows():
+            vals = []
+            for val in row:
+                if pd.isna(val) or val is None or val is np.nan:
+                    vals.append(None)
+                elif isinstance(val, (int, float, bool, str)):
+                    vals.append(val)
+                else:
+                    vals.append(str(val))
+            records.append(tuple(vals))
+
+        for rec in records:
+            cursor.execute(insert_sql, rec)
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {
+            "status": "success",
+            "table": table_name,
+            "schema": schema,
+            "mode": mode,
+            "rows_written": len(records),
+            "rows_loaded": len(records),
+            "message": f"Successfully loaded {len(records)} records into '{schema}.{table_name}' ({mode} mode)."
+        }
+
+    except Exception as e:
+        conn.rollback()
+        cursor.close()
+        conn.close()
+        raise e
 
 
 def save_pipeline(p: dict) -> dict:

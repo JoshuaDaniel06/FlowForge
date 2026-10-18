@@ -25,8 +25,11 @@ from backend.database import (
     init_db,
     list_pipeline_runs,
     list_pipelines,
+    preview_table,
     record_pipeline_run,
     save_pipeline,
+    validate_destination_mapping,
+    write_dataframe_to_postgres,
 )
 from backend.transformations import (
     TransformationError,
@@ -75,6 +78,20 @@ class PipelineExecutionPayload(BaseModel):
     pipeline_id: Optional[str] = None
     pipeline: Optional[PipelinePayload] = None
     records: Optional[List[Dict[str, Any]]] = None
+
+
+class ValidateMappingPayload(BaseModel):
+    target_table: str
+    source_columns: List[str]
+    schema_name: Optional[str] = "public"
+
+
+class LoadOutputPayload(BaseModel):
+    records: Optional[List[Dict[str, Any]]] = None
+    table_name: str
+    schema_name: Optional[str] = "public"
+    mode: Optional[str] = "append"
+    column_mapping: Optional[Dict[str, str]] = None
 
 
 
@@ -403,6 +420,87 @@ async def load_to_postgres(
             "status": "error",
             "message": f"PostgreSQL loading error: {error}",
         }
+
+
+# ==========================================
+# POSTGRESQL INTEGRATION ENDPOINTS (STAGE 6 - FEATURE 5)
+# ==========================================
+
+@app.get("/db/status")
+@app.post("/db/test-connection")
+def get_db_status():
+    """
+    Test and return safe PostgreSQL connection metadata.
+    Zero passwords or credentials returned.
+    """
+    return check_connection()
+
+
+@app.get("/db/tables")
+def list_db_tables():
+    """
+    Retrieve all user tables in public schema with row counts and column schemas.
+    """
+    try:
+        tables = get_public_tables()
+        return {"status": "success", "tables": tables}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch PostgreSQL tables: {e}")
+
+
+@app.get("/db/tables/{table_name}/preview")
+def preview_db_table(table_name: str, schema: str = "public", limit: int = 25):
+    """
+    Safely preview records and schema from a user table in PostgreSQL.
+    """
+    try:
+        preview = preview_table(table_name=table_name, schema=schema, limit=limit)
+        return {"status": "success", "preview": preview}
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to preview table '{table_name}': {e}")
+
+
+@app.post("/db/validate-mapping")
+def validate_mapping(payload: ValidateMappingPayload):
+    """
+    Validate source columns and type compatibility against a target PostgreSQL table.
+    """
+    try:
+        result = validate_destination_mapping(
+            target_table=payload.target_table,
+            source_columns=payload.source_columns,
+            schema=payload.schema_name or "public",
+        )
+        return {"status": "success", "validation": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Validation failed: {e}")
+
+
+@app.post("/db/load-output")
+def load_output_destination(payload: LoadOutputPayload):
+    """
+    Directly load dataset or pipeline output into a target PostgreSQL table.
+    Supports append or replace modes with atomic transaction handling.
+    """
+    df = _get_base_dataframe(payload.records)
+    if df.empty:
+        raise HTTPException(status_code=400, detail="Cannot load empty dataset to PostgreSQL destination.")
+
+    try:
+        res = write_dataframe_to_postgres(
+            df=df,
+            table_name=payload.table_name,
+            schema=payload.schema_name or "public",
+            mode=payload.mode or "append",
+            column_mapping=payload.column_mapping,
+        )
+        return res
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PostgreSQL load failed: {e}")
 
 
 # ==========================================
@@ -855,43 +953,27 @@ def execute_pipeline_workflow(payload: PipelineExecutionPayload):
     # 5. Handle destination persistence
     destination_status = "skipped"
     destination_table = destination.get("table", "customers")
+    destination_schema = destination.get("schema", "public")
+    destination_mode = destination.get("mode", "append")
     records_loaded = 0
     dest_error = None
 
     if destination.get("type") == "postgres" and not final_df.empty:
         try:
-            conn = get_connection()
-            cursor = conn.cursor()
-
-            # If writing to customers table
-            if destination_table == "customers":
-                records = dataframe_to_records(final_df)
-                for r in records:
-                    cursor.execute("""
-                        INSERT INTO customers (id, name, email, age, city, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                        ON CONFLICT (id) DO UPDATE SET
-                            name = EXCLUDED.name,
-                            email = EXCLUDED.email,
-                            age = EXCLUDED.age,
-                            city = EXCLUDED.city,
-                            updated_at = CURRENT_TIMESTAMP;
-                    """, (
-                        r.get("id"),
-                        r.get("name"),
-                        r.get("email"),
-                        r.get("age"),
-                        r.get("city"),
-                    ))
-                conn.commit()
-                records_loaded = len(records)
-                destination_status = f"Successfully loaded {records_loaded} records to 'customers'."
-
-            cursor.close()
-            conn.close()
+            write_res = write_dataframe_to_postgres(
+                df=final_df,
+                table_name=destination_table,
+                schema=destination_schema,
+                mode=destination_mode,
+                column_mapping=destination.get("column_mapping"),
+            )
+            records_loaded = write_res.get("rows_written", len(final_df))
+            destination_status = write_res.get("message") or f"Successfully loaded {records_loaded} records to '{destination_table}'."
         except Exception as dest_err:
             dest_error = str(dest_err)
             destination_status = f"PostgreSQL load failed: {dest_error}"
+    elif destination.get("type") == "csv":
+        destination_status = f"CSV stream ready ({len(final_df)} records)."
 
     # 6. Finalize execution run lifecycle status
     completed_steps = sum(1 for s in step_telemetry if s.get("status") in ("success", "warning"))
@@ -941,6 +1023,7 @@ def execute_pipeline_workflow(payload: PipelineExecutionPayload):
     return {
         "status": run_status,
         "run_id": run_id,
+        "run": run_details or run_record,
         "started_at": run_details.get("started_at") if run_details else None,
         "completed_at": run_details.get("completed_at") if run_details else None,
         "duration_ms": run_record["duration_ms"],

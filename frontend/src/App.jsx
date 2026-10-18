@@ -103,7 +103,7 @@ const NAV_ITEMS = [
       },
       {
         id: "postgres",
-        label: "PostgreSQL Database",
+        label: "Data Sources",
         icon: Server,
       },
     ],
@@ -323,8 +323,8 @@ function App() {
         subtitle: "Design, configure, and validate your data transformation workflows",
       },
       postgres: {
-        title: "PostgreSQL Database",
-        subtitle: "Load and manage cleaned data in PostgreSQL",
+        title: "Data Sources",
+        subtitle: "Inspect PostgreSQL connection status, metadata, and browse relational tables",
       },
       api: {
         title: "API Status",
@@ -1235,8 +1235,132 @@ function StepPreviewModal({
 
 
 /* =========================================================
-   PIPELINE EXECUTION RESULTS MODAL (STAGE 3)
+   TABLE PREVIEW MODAL (STAGE 6 - FEATURE 5)
 ========================================================= */
+
+function TablePreviewModal({ isOpen, onClose, tableName, schema = "public" }) {
+  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (isOpen && tableName) {
+      setLoading(true);
+      setError(null);
+      fetch(`${API_URL}/db/tables/${tableName}/preview?schema=${schema}&limit=50`)
+        .then((res) => {
+          if (!res.ok) throw new Error(`Could not load preview for table '${tableName}'`);
+          return res.json();
+        })
+        .then((resData) => {
+          setData(resData.preview);
+        })
+        .catch((err) => {
+          setError(err.message);
+        })
+        .finally(() => {
+          setLoading(false);
+        });
+    }
+  }, [isOpen, tableName, schema]);
+
+  if (!isOpen) return null;
+
+  const records = data?.records || [];
+  const columns = data?.columns || [];
+
+  return (
+    <div className="cleaned-customer-overlay" onClick={onClose}>
+      <div
+        className="cleaned-customer-modal"
+        style={{ width: "min(960px, 95%)", maxHeight: "90vh" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="cleaned-customer-modal-header">
+          <div>
+            <h3>PostgreSQL Table Preview: {schema}.{tableName}</h3>
+            <p style={{ marginTop: "2px" }}>
+              {data ? `${data.total_rows} total rows in table • Showing first ${records.length} records` : "Connecting..."}
+            </p>
+          </div>
+          <button type="button" onClick={onClose}>×</button>
+        </div>
+
+        <div className="pipeline-modal-body" style={{ maxHeight: "calc(90vh - 140px)", overflowY: "auto" }}>
+          {loading && (
+            <div style={{ padding: "30px", textAlign: "center", color: "#64748b" }}>
+              Loading records from PostgreSQL...
+            </div>
+          )}
+
+          {error && (
+            <div className="notification" style={{ background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", marginBottom: "12px" }}>
+              <AlertTriangle size={16} />
+              <span>{error}</span>
+            </div>
+          )}
+
+          {data && (
+            <>
+              {/* Schema Summary */}
+              <div style={{ marginBottom: "12px" }}>
+                <span style={{ fontSize: "12px", fontWeight: "600", color: "#475569" }}>
+                  Schema Columns ({columns.length}):
+                </span>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "4px" }}>
+                  {columns.map((c) => (
+                    <span key={c.name} className="pipeline-tag-pill">
+                      {c.name}: <strong>{c.type}</strong> {c.nullable ? "" : "NOT NULL"}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Records Table */}
+              {records.length > 0 ? (
+                <div className="pipeline-preview-table-wrapper">
+                  <table className="cleaned-customer-table" style={{ width: "100%" }}>
+                    <thead>
+                      <tr>
+                        {columns.map((c) => (
+                          <th key={c.name}>{c.name}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {records.map((row, idx) => (
+                        <tr key={idx}>
+                          {columns.map((c) => (
+                            <td key={c.name}>
+                              {row[c.name] !== null && row[c.name] !== undefined ? (
+                                String(row[c.name])
+                              ) : (
+                                <span className="pipeline-null-badge">null</span>
+                              )}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div style={{ padding: "30px", textAlign: "center", color: "#94a3b8", background: "#f8fafc", borderRadius: "8px" }}>
+                  Table '{tableName}' is currently empty (0 rows).
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="pipeline-modal-footer">
+          <button type="button" className="secondary-button" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 /* =========================================================
    PIPELINE EXECUTION RESULTS MODAL (STAGE 5 - FEATURE 4)
@@ -2156,7 +2280,7 @@ function PipelineWorkbenchPage({
   const [name, setName] = useState("Customer Ingestion & Quality Pipeline");
   const [description, setDescription] = useState("Standardize customer demographics, drop duplicates and load to PostgreSQL");
   const [inputSource, setInputSource] = useState("current_dataset");
-  const [destination, setDestination] = useState({ type: "postgres", table: "customers" });
+  const [destination, setDestination] = useState({ type: "postgres", schema: "public", table: "customers", mode: "append" });
   const [errorPolicy, setErrorPolicy] = useState("stop_on_error");
   const [status, setStatus] = useState("draft");
   const [version, setVersion] = useState(1);
@@ -2199,6 +2323,115 @@ function PipelineWorkbenchPage({
   const [execModalOpen, setExecModalOpen] = useState(false);
   const [executionResult, setExecutionResult] = useState(null);
   const [isExecuting, setIsExecuting] = useState(false);
+
+  // STAGE 6: PostgreSQL Integration and Output Destination
+  const [dbTables, setDbTables] = useState([]);
+  const [previewModalTable, setPreviewModalTable] = useState(null);
+  const [mappingValidation, setMappingValidation] = useState(null);
+  const [isValidatingMapping, setIsValidatingMapping] = useState(false);
+  const [isTestingConn, setIsTestingConn] = useState(false);
+  const [isLoadingOutput, setIsLoadingOutput] = useState(false);
+
+  useEffect(() => {
+    fetch(`${API_URL}/db/tables`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.tables) setDbTables(data.tables);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleTestDbConn = async () => {
+    setIsTestingConn(true);
+    try {
+      const res = await fetch(`${API_URL}/db/status`);
+      const data = await res.json();
+      if (data.status === "connected") {
+        setBannerMessage(`Connected to PostgreSQL database '${data.database}' at ${data.host}:${data.port} (v${data.version}).`);
+      } else {
+        setBannerMessage(`PostgreSQL connection failed: ${data.error || "Disconnected"}`);
+      }
+    } catch (e) {
+      setBannerMessage(`PostgreSQL connection error: ${e.message}`);
+    } finally {
+      setIsTestingConn(false);
+    }
+  };
+
+  const handleBrowseDbTables = async () => {
+    try {
+      const res = await fetch(`${API_URL}/db/tables`);
+      if (res.ok) {
+        const data = await res.json();
+        setDbTables(data.tables || []);
+        setBannerMessage(`Loaded ${data.tables?.length || 0} public PostgreSQL tables.`);
+      }
+    } catch (e) {
+      setBannerMessage(`Could not list database tables: ${e.message}`);
+    }
+  };
+
+  const handlePreviewDestinationTable = () => {
+    const targetTable = destination?.table || "customers";
+    setPreviewModalTable(targetTable);
+  };
+
+  const handleValidateMapping = async () => {
+    setIsValidatingMapping(true);
+    setMappingValidation(null);
+    try {
+      const sourceCols = result?.columns || (result?.records?.[0] ? Object.keys(result.records[0]) : ["id", "name", "email", "age", "city"]);
+      const res = await fetch(`${API_URL}/db/validate-mapping`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target_table: destination?.table || "customers",
+          source_columns: sourceCols,
+          schema_name: destination?.schema || "public",
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMappingValidation(data.validation);
+        if (data.validation.valid) {
+          setBannerMessage(data.validation.notice || `Mapping valid for table '${destination?.table || "customers"}'.`);
+        } else {
+          setBannerMessage(`Mapping validation warnings/issues for '${destination?.table || "customers"}'.`);
+        }
+      }
+    } catch (e) {
+      setBannerMessage(`Mapping validation failed: ${e.message}`);
+    } finally {
+      setIsValidatingMapping(false);
+    }
+  };
+
+  const handleDirectLoadOutput = async () => {
+    setIsLoadingOutput(true);
+    try {
+      const res = await fetch(`${API_URL}/db/load-output`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          records: result?.records || null,
+          table_name: destination?.table || "customers",
+          schema_name: destination?.schema || "public",
+          mode: destination?.mode || "append",
+        }),
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || "Load failed");
+      }
+      const data = await res.json();
+      setBannerMessage(data.message || `Successfully loaded ${data.rows_written} records into '${destination?.table}'.`);
+      handleBrowseDbTables();
+    } catch (e) {
+      setBannerMessage(`Load output failed: ${e.message}`);
+    } finally {
+      setIsLoadingOutput(false);
+    }
+  };
 
   const availableColumns = result?.records?.[0]
     ? Object.keys(result.records[0])
@@ -2666,23 +2899,6 @@ function PipelineWorkbenchPage({
           </div>
 
           <div className="pipeline-form-group">
-            <label>Destination</label>
-            <select
-              className="pipeline-form-select"
-              value={`${destination.type}:${destination.table || ""}`}
-              onChange={(e) => {
-                const [type, table] = e.target.value.split(":");
-                setDestination({ type, table });
-                setStatus("draft");
-              }}
-            >
-              <option value="postgres:customers">PostgreSQL: customers table</option>
-              <option value="postgres:pipeline_output">PostgreSQL: pipeline_output</option>
-              <option value="csv:download">CSV File Download</option>
-            </select>
-          </div>
-
-          <div className="pipeline-form-group">
             <label>Error Policy</label>
             <select
               className="pipeline-form-select"
@@ -2712,6 +2928,164 @@ function PipelineWorkbenchPage({
                 </option>
               ))}
             </select>
+          </div>
+        </div>
+
+        {/* OUTPUT DESTINATION CONFIGURATION (STAGE 6 - FEATURE 5) */}
+        <div className="destination-config-panel">
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <Server size={17} color="#2563eb" />
+              <strong style={{ fontSize: "14px", color: "#0f172a" }}>Output Configuration</strong>
+            </div>
+            <span style={{ fontSize: "12px", color: "#64748b" }}>
+              Target: {destination.type === "postgres" ? `PostgreSQL (${destination.schema || "public"}.${destination.table || "customers"} • ${destination.mode === "replace" ? "Replace" : "Append"})` : "CSV Download"}
+            </span>
+          </div>
+
+          <div className="pipeline-config-grid">
+            <div className="pipeline-form-group">
+              <label>Destination Target</label>
+              <select
+                className="pipeline-form-select"
+                value={destination.type || "postgres"}
+                onChange={(e) => {
+                  setDestination({ ...destination, type: e.target.value });
+                  setStatus("draft");
+                }}
+              >
+                <option value="postgres">PostgreSQL Relational Table</option>
+                <option value="csv">CSV File Stream / Download</option>
+              </select>
+            </div>
+
+            {destination.type === "postgres" && (
+              <>
+                <div className="pipeline-form-group">
+                  <label>Allowed Schema</label>
+                  <input
+                    type="text"
+                    className="pipeline-form-input"
+                    value={destination.schema || "public"}
+                    onChange={(e) => {
+                      setDestination({ ...destination, schema: e.target.value });
+                      setStatus("draft");
+                    }}
+                    placeholder="public"
+                  />
+                </div>
+
+                <div className="pipeline-form-group">
+                  <label>Destination Table</label>
+                  <input
+                    type="text"
+                    className="pipeline-form-input"
+                    value={destination.table || "customers"}
+                    onChange={(e) => {
+                      setDestination({ ...destination, table: e.target.value });
+                      setStatus("draft");
+                    }}
+                    placeholder="e.g. customers, pipeline_output"
+                    list="available-db-tables"
+                  />
+                  <datalist id="available-db-tables">
+                    {dbTables.map((t) => (
+                      <option key={t.name} value={t.name}>{t.name} ({t.row_count} rows)</option>
+                    ))}
+                  </datalist>
+                </div>
+
+                <div className="pipeline-form-group">
+                  <label>Write Mode</label>
+                  <select
+                    className="pipeline-form-select"
+                    value={destination.mode || "append"}
+                    onChange={(e) => {
+                      setDestination({ ...destination, mode: e.target.value });
+                      setStatus("draft");
+                    }}
+                  >
+                    <option value="append">Append (Insert new records)</option>
+                    <option value="replace">Replace (Truncate & overwrite table)</option>
+                  </select>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* MAPPING VALIDATION NOTICE IF APPLICABLE */}
+          {mappingValidation && (
+            <div style={{ marginTop: "12px", padding: "10px 14px", borderRadius: "6px", background: mappingValidation.valid ? "#f0fdf4" : "#fef2f2", border: `1px solid ${mappingValidation.valid ? "#bbf7d0" : "#fecaca"}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", fontWeight: "600", color: mappingValidation.valid ? "#166534" : "#991b1b" }}>
+                {mappingValidation.valid ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+                <span>
+                  {mappingValidation.table_exists
+                    ? `Destination table '${destination.table}' verified with ${mappingValidation.target_columns?.length || 0} columns.`
+                    : `Notice: Table '${destination.table}' does not exist yet; FlowForge will auto-create it with matching column types upon load.`}
+                </span>
+              </div>
+              {mappingValidation.errors?.length > 0 && (
+                <ul style={{ margin: "6px 0 0", paddingLeft: "20px", fontSize: "12px", color: "#b91c1c" }}>
+                  {mappingValidation.errors.map((err, i) => (
+                    <li key={i}>{err}</li>
+                  ))}
+                </ul>
+              )}
+              {mappingValidation.warnings?.length > 0 && (
+                <div style={{ marginTop: "4px", fontSize: "12px", color: "#b45309" }}>
+                  <strong>Warnings:</strong> {mappingValidation.warnings.join("; ")}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* STAGE 6 BUTTONS */}
+          <div className="destination-actions-row">
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={handleTestDbConn}
+              disabled={isTestingConn}
+            >
+              <Server size={14} /> {isTestingConn ? "Testing..." : "Test Connection"}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={handleBrowseDbTables}
+            >
+              <Database size={14} /> Browse Tables {dbTables.length > 0 ? `(${dbTables.length})` : ""}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={handlePreviewDestinationTable}
+            >
+              <Eye size={14} /> Preview Table
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={handleValidateMapping}
+              disabled={isValidatingMapping}
+            >
+              <FileCheck2 size={14} /> {isValidatingMapping ? "Validating..." : "Validate Mapping"}
+            </button>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={handleDirectLoadOutput}
+              disabled={isLoadingOutput}
+            >
+              <Database size={14} /> {isLoadingOutput ? "Loading..." : "Load Output"}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={handlePreviewDestinationTable}
+            >
+              <Activity size={14} /> View Loaded Data
+            </button>
           </div>
         </div>
 
@@ -2915,6 +3289,14 @@ function PipelineWorkbenchPage({
         pipelineName={name}
         onRetry={handleRetryExecution}
         isRetrying={isExecuting}
+      />
+
+      {/* TABLE PREVIEW MODAL (STAGE 6 - FEATURE 5) */}
+      <TablePreviewModal
+        isOpen={Boolean(previewModalTable)}
+        onClose={() => setPreviewModalTable(null)}
+        tableName={previewModalTable}
+        schema={destination.schema || "public"}
       />
     </div>
   );
@@ -4421,12 +4803,77 @@ function PostgreSQLPage({
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [dbStatus, setDbStatus] = useState(null);
+  const [tables, setTables] = useState([]);
+  const [loadingTables, setLoadingTables] = useState(false);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [previewModalTable, setPreviewModalTable] = useState(null);
+  const [tableFilter, setTableFilter] = useState("");
+
+  const fetchStatus = async () => {
+    try {
+      const res = await fetch(`${API_URL}/db/status`);
+      if (res.ok) {
+        const data = await res.json();
+        setDbStatus(data);
+        return data;
+      }
+    } catch {
+      setDbStatus({ status: "disconnected" });
+    }
+  };
+
+  const fetchTables = async () => {
+    setLoadingTables(true);
+    try {
+      const res = await fetch(`${API_URL}/db/tables`);
+      if (res.ok) {
+        const data = await res.json();
+        setTables(data.tables || []);
+      }
+    } catch (err) {
+      console.error("Failed to fetch tables", err);
+    } finally {
+      setLoadingTables(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setTestingConnection(true);
+    setTestResult(null);
+    try {
+      const res = await fetch(`${API_URL}/db/test-connection`, { method: "POST" });
+      const data = await res.json();
+      setDbStatus(data);
+      if (data.status === "connected") {
+        setTestResult({
+          type: "success",
+          message: `Connected successfully to PostgreSQL '${data.database}' at ${data.host}:${data.port} (User: ${data.user}, Version: ${data.version})`,
+        });
+        fetchTables();
+      } else {
+        setTestResult({
+          type: "error",
+          message: `Connection failed: ${data.error || "Unable to reach database"}`,
+        });
+      }
+    } catch (err) {
+      setTestResult({
+        type: "error",
+        message: `Network error: ${err.message}`,
+      });
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  const handleRefresh = async () => {
+    await Promise.all([fetchStatus(), fetchTables()]);
+  };
 
   useEffect(() => {
-    fetch(`${API_URL}/db/status`)
-      .then((res) => res.json())
-      .then((data) => setDbStatus(data))
-      .catch(() => {});
+    fetchStatus();
+    fetchTables();
   }, [dbLoadResult]);
 
   const getValue = (row, keys) => {
@@ -4532,6 +4979,10 @@ function PostgreSQLPage({
     dbLoadResult?.status === "success" ||
     dbStatus?.status === "connected";
 
+  const filteredTables = tables.filter((t) =>
+    t.name.toLowerCase().includes(tableFilter.trim().toLowerCase())
+  );
+
   return (
     <div className="page-container">
 
@@ -4552,9 +5003,9 @@ function PostgreSQLPage({
         />
 
         <StatCard
-          label="RECORDS"
-          value={dbLoadResult?.records_loaded ?? "—"}
-          description="Records reported as loaded"
+          label="TABLES"
+          value={tables.length ? `${tables.length} tables` : (dbLoadResult?.records_loaded ?? "—")}
+          description="Public schema catalog"
           icon={Server}
         />
 
@@ -4575,7 +5026,7 @@ function PostgreSQLPage({
 
         <PanelHeader
           title="PostgreSQL Database"
-          description="Load the cleaned dataset into PostgreSQL"
+          description="Safe connection metadata and database operations"
           icon={Database}
         />
 
@@ -4594,35 +5045,165 @@ function PostgreSQLPage({
                 ? dbLoadResult.message ||
                   "The load endpoint confirmed a successful database load."
                 : dbStatus?.status === "connected"
-                ? `Connected to database '${dbStatus.database}' at ${dbStatus.host}:${dbStatus.port}. Ready to load records.`
-                : "Database connectivity has not been verified in this session. Configure .env and load a dataset to verify."}
+                ? `Connected to database '${dbStatus.database}' at ${dbStatus.host}:${dbStatus.port} as user '${dbStatus.user}'. Engine: ${dbStatus.version || "PostgreSQL"}.`
+                : "Database connectivity has not been verified in this session. Configure .env and click Test Connection to verify."}
             </p>
 
             <div className="database-tags">
-
               <span>PostgreSQL</span>
+              <span>DB: {dbStatus?.database || "flowforge"}</span>
+              <span>Host: {dbStatus?.host || "localhost"}:{dbStatus?.port || 5432}</span>
+              <span>User: {dbStatus?.user || "postgres"}</span>
+              <span>Status: {isConnected ? "Connected" : "Disconnected"}</span>
+              <span>{file?.name || "No dataset selected"}</span>
+            </div>
 
-              <span>
-                {file?.name || "No dataset selected"}
-              </span>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "14px" }}>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={handleTestConnection}
+                disabled={testingConnection}
+                style={{ fontSize: "12px", padding: "8px 14px", display: "inline-flex", alignItems: "center", gap: "6px" }}
+              >
+                <Activity size={14} className={testingConnection ? "spin" : ""} />
+                {testingConnection ? "Testing Connection..." : "Test Connection"}
+              </button>
 
-              <span>
-                {databaseReport?.total_records ?? "—"} analyzed rows
-              </span>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => {
+                  document.getElementById("available-tables-section")?.scrollIntoView({ behavior: "smooth" });
+                }}
+                style={{ fontSize: "12px", padding: "8px 14px", display: "inline-flex", alignItems: "center", gap: "6px" }}
+              >
+                <Database size={14} />
+                Browse Tables
+              </button>
 
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={handleRefresh}
+                style={{ fontSize: "12px", padding: "8px 14px", display: "inline-flex", alignItems: "center", gap: "6px" }}
+              >
+                <RefreshCw size={14} className={loadingTables ? "spin" : ""} />
+                Refresh
+              </button>
+
+              <button
+                type="button"
+                className="secondary-button datamedic-mysql-load-button"
+                onClick={loadToPostgres}
+                disabled={!file}
+                style={{ fontSize: "12px", padding: "8px 14px", marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "6px" }}
+              >
+                <UploadCloud size={14} />
+                Load Data
+              </button>
             </div>
 
           </div>
 
-          <button
-            className="primary-button datamedic-mysql-load-button"
-            onClick={loadToPostgres}
-            disabled={!file}
-          >
-            Load Data
-          </button>
-
         </div>
+
+        {testResult && (
+          <div
+            className={`notification ${testResult.type === "success" ? "notification-success" : "notification-error"}`}
+            style={{
+              margin: "14px 0 0 0",
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+              padding: "10px 14px",
+              borderRadius: "6px",
+              background: testResult.type === "success" ? "#f0fdf4" : "#fef2f2",
+              border: `1px solid ${testResult.type === "success" ? "#bbf7d0" : "#fecaca"}`,
+              color: testResult.type === "success" ? "#166534" : "#991b1b",
+            }}
+          >
+            {testResult.type === "success" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+            <span style={{ fontSize: "13px" }}>{testResult.message}</span>
+            <button
+              type="button"
+              onClick={() => setTestResult(null)}
+              style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", color: "inherit", fontSize: "16px" }}
+            >
+              ×
+            </button>
+          </div>
+        )}
+
+      </div>
+
+      {/* =====================================================
+          AVAILABLE TABLES SECTION
+      ===================================================== */}
+
+      <div id="available-tables-section" className="panel" style={{ marginTop: "20px" }}>
+
+        <PanelHeader
+          title="Available Tables"
+          description="Public schema tables, record counts, and column definitions"
+          icon={Server}
+        />
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px", gap: "10px", flexWrap: "wrap" }}>
+          <div className="cleaned-search-box" style={{ maxWidth: "320px", margin: 0 }}>
+            <Search size={16} />
+            <input
+              type="text"
+              placeholder="Search tables..."
+              value={tableFilter}
+              onChange={(e) => setTableFilter(e.target.value)}
+            />
+          </div>
+          <div style={{ fontSize: "12px", color: "#64748b" }}>
+            {tables.length} table{tables.length !== 1 ? "s" : ""} registered in public schema
+          </div>
+        </div>
+
+        {loadingTables ? (
+          <div style={{ padding: "30px", textAlign: "center", color: "#64748b" }}>
+            Scanning PostgreSQL tables...
+          </div>
+        ) : filteredTables.length > 0 ? (
+          <div className="db-tables-grid">
+            {filteredTables.map((tbl) => (
+              <div key={tbl.name} className="db-table-card">
+                <div>
+                  <div className="db-table-card-header">
+                    <span className="db-table-card-title">
+                      <Database size={15} color="#2563eb" />
+                      {tbl.name}
+                    </span>
+                    <span className="db-table-badge">
+                      {tbl.row_count.toLocaleString()} rows
+                    </span>
+                  </div>
+                  <p style={{ fontSize: "11px", color: "#64748b", margin: "6px 0 12px 0", lineHeight: "1.4" }}>
+                    {tbl.columns.length} columns: {tbl.columns.slice(0, 4).map((c) => c.name).join(", ")}{tbl.columns.length > 4 ? "..." : ""}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  style={{ width: "100%", justifyContent: "center", padding: "6px 12px", fontSize: "12px", display: "inline-flex", alignItems: "center", gap: "6px" }}
+                  onClick={() => setPreviewModalTable(tbl.name)}
+                >
+                  <Eye size={14} /> Preview Table
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="cleaned-no-results">
+            <Database size={28} />
+            <h3>No tables found</h3>
+            <p>{tableFilter ? "No tables match your search filter." : "No tables exist yet in the public schema."}</p>
+          </div>
+        )}
 
       </div>
 
@@ -4934,6 +5515,14 @@ function PostgreSQLPage({
         </div>
 
       )}
+
+      {/* Table Preview Modal */}
+      <TablePreviewModal
+        isOpen={!!previewModalTable}
+        tableName={previewModalTable}
+        schema="public"
+        onClose={() => setPreviewModalTable(null)}
+      />
 
     </div>
   );

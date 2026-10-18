@@ -6057,3 +6057,82 @@ body {
   color: #dc2626;
   font-weight: 600;
 }
+
+.pipeline-null-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  background: #f1f5f9;
+  color: #94a3b8;
+  border-radius: 4px;
+  font-size: 11px;
+  font-style: italic;
+  font-family: monospace;
+}
+
+.pipeline-preview-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.pipeline-preview-toolbar-left,
+.pipeline-preview-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pipeline-diff-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pipeline-diff-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pipeline-diff-section h5 {
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+  margin: 0;
+}
+
+.pipeline-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pipeline-tag-pill {
+  padding: 2px 8px;
+  background: #e2e8f0;
+  color: #334155;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: monospace;
+}
+
+.pipeline-tag-pill.added {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.pipeline-tag-pill.dropped {
+  background: #fee2e2;
+  color: #b91c1c;
+}

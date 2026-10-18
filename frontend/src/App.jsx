@@ -33,6 +33,8 @@ import {
   Eye,
   Clock,
   PlayCircle,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -1355,6 +1357,457 @@ function PipelineExecutionModal({
 
 
 /* =========================================================
+   INTERMEDIATE DATA PREVIEW PANEL (STAGE 4 - FEATURE 3)
+========================================================= */
+
+function IntermediatePreviewPanel({
+  steps = [],
+  records = null,
+  activeStepIndex = 0,
+  onSelectStepIndex,
+}) {
+  const [stepIndex, setStepIndex] = useState(activeStepIndex || 0);
+  const [viewMode, setViewMode] = useState("output"); // 'output', 'input', 'schema', 'changes'
+  const [rowLimit, setRowLimit] = useState(25);
+  const [previewData, setPreviewData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (activeStepIndex !== undefined && activeStepIndex !== null) {
+      setStepIndex(activeStepIndex);
+    }
+  }, [activeStepIndex]);
+
+  const currentStep = steps[stepIndex] || null;
+
+  const loadPreview = async (idx, limit) => {
+    if (!steps || steps.length === 0 || idx < 0 || idx >= steps.length) {
+      setPreviewData(null);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/preview-step`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          step_index: idx,
+          steps,
+          records,
+          row_limit: limit,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.status === "failed") {
+        setError(data.error || data.detail || "Transformation preview failed.");
+      }
+      setPreviewData(data);
+    } catch (err) {
+      console.error(err);
+      setError("Network error fetching preview.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (steps.length > 0) {
+      const validIndex = Math.min(stepIndex, steps.length - 1);
+      loadPreview(validIndex, rowLimit);
+    } else {
+      setPreviewData(null);
+    }
+  }, [stepIndex, steps, records, rowLimit]);
+
+  const handleStepChange = (newIndex) => {
+    const clamped = Math.max(0, Math.min(steps.length - 1, newIndex));
+    setStepIndex(clamped);
+    if (onSelectStepIndex) onSelectStepIndex(clamped);
+  };
+
+  const handleDownloadPreview = () => {
+    const recordsToExport = viewMode === "input" ? previewData?.before?.sample : previewData?.after?.sample;
+    if (!recordsToExport || recordsToExport.length === 0) return;
+
+    const headers = Object.keys(recordsToExport[0]);
+    const csvRows = [
+      headers.join(","),
+      ...recordsToExport.map((row) =>
+        headers.map((h) => {
+          const val = row[h];
+          if (val === null || val === undefined) return "";
+          return String(val).includes(",") ? `"${val}"` : String(val);
+        }).join(",")
+      ),
+    ];
+    const blob = new Blob([csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `intermediate_step_${stepIndex + 1}_${viewMode}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  if (!steps || steps.length === 0) {
+    return (
+      <div className="panel">
+        <PanelHeader
+          title="Intermediate Data Preview"
+          description="Step-by-step sample data, schema inspection, and transformation changes"
+          icon={Eye}
+        />
+        <EmptyState
+          icon={Sliders}
+          title="No Steps to Preview"
+          description="Add transformation steps above to preview intermediate dataset states."
+        />
+      </div>
+    );
+  }
+
+  const before = previewData?.before || { rows: 0, columns: [], schema: [], sample: [] };
+  const after = previewData?.after || { rows: 0, columns: [], schema: [], sample: [] };
+  const changes = previewData?.changes || {};
+  const currentSample = viewMode === "input" ? before.sample : after.sample;
+  const currentCols = viewMode === "input" ? before.columns : after.columns;
+
+  return (
+    <div className="panel">
+      <PanelHeader
+        title="Intermediate Data Preview"
+        description={`Step ${String(stepIndex + 1).padStart(2, "0")} of ${String(steps.length).padStart(2, "0")}: ${currentStep?.name || "Step"}`}
+        icon={Eye}
+      />
+
+      {/* TOOLBAR */}
+      <div className="pipeline-preview-toolbar">
+        <div className="pipeline-preview-toolbar-left">
+          <button
+            type="button"
+            className="secondary-button"
+            style={{ padding: "6px 10px", fontSize: "12px" }}
+            onClick={() => handleStepChange(stepIndex - 1)}
+            disabled={stepIndex === 0}
+            title="Previous Step"
+          >
+            <ChevronLeft size={14} /> Previous
+          </button>
+
+          <select
+            className="pipeline-form-select"
+            style={{ width: "auto", minWidth: "220px", padding: "6px 10px", fontSize: "12px" }}
+            value={stepIndex}
+            onChange={(e) => handleStepChange(Number(e.target.value))}
+          >
+            {steps.map((s, idx) => (
+              <option key={s.id || idx} value={idx}>
+                Step {String(idx + 1).padStart(2, "0")}: {s.name} ({s.type})
+              </option>
+            ))}
+          </select>
+
+          <button
+            type="button"
+            className="secondary-button"
+            style={{ padding: "6px 10px", fontSize: "12px" }}
+            onClick={() => handleStepChange(stepIndex + 1)}
+            disabled={stepIndex === steps.length - 1}
+            title="Next Step"
+          >
+            Next <ChevronRight size={14} />
+          </button>
+
+          <button
+            type="button"
+            className="secondary-button"
+            style={{ padding: "6px 10px", fontSize: "12px" }}
+            onClick={() => loadPreview(stepIndex, rowLimit)}
+            disabled={loading}
+            title="Refresh Preview"
+          >
+            <RefreshCw size={13} className={loading ? "spin" : ""} /> Refresh
+          </button>
+        </div>
+
+        <div className="pipeline-preview-toolbar-right">
+          <select
+            className="pipeline-form-select"
+            style={{ width: "auto", padding: "6px 10px", fontSize: "12px" }}
+            value={rowLimit}
+            onChange={(e) => setRowLimit(Number(e.target.value))}
+          >
+            <option value={10}>10 sample rows</option>
+            <option value={25}>25 sample rows</option>
+            <option value={50}>50 sample rows</option>
+          </select>
+
+          <button
+            type="button"
+            className="secondary-button"
+            style={{ padding: "6px 12px", fontSize: "12px" }}
+            onClick={handleDownloadPreview}
+            disabled={!currentSample || currentSample.length === 0}
+            title="Download Preview as CSV"
+          >
+            <Download size={13} /> Download Preview
+          </button>
+        </div>
+      </div>
+
+      {/* TELEMETRY CARDS */}
+      <div className="pipeline-telemetry-grid">
+        <div className="pipeline-telemetry-badge">
+          <span>Transformation</span>
+          <strong style={{ fontSize: "14px", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+            {currentStep?.name}
+          </strong>
+        </div>
+        <div className="pipeline-telemetry-badge">
+          <span>Execution Time</span>
+          <strong>{previewData?.duration_ms || 0} ms</strong>
+        </div>
+        <div className="pipeline-telemetry-badge">
+          <span>Input Shape</span>
+          <strong>{previewData?.rows_before ?? before.rows} × {previewData?.cols_before_count ?? before.columns.length}</strong>
+        </div>
+        <div className="pipeline-telemetry-badge">
+          <span>Output Shape</span>
+          <strong>{previewData?.rows_after ?? after.rows} × {previewData?.cols_after_count ?? after.columns.length}</strong>
+        </div>
+        <div className="pipeline-telemetry-badge">
+          <span>Row Variance</span>
+          <strong className={(previewData?.row_delta || 0) < 0 ? "pipeline-delta-negative" : "pipeline-delta-positive"}>
+            {(previewData?.row_delta || 0) > 0 ? `+${previewData?.row_delta}` : previewData?.row_delta || 0} rows
+          </strong>
+        </div>
+      </div>
+
+      {/* ERROR OR WARNING NOTIFICATION */}
+      {error && (
+        <div className="notification" style={{ background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", marginBottom: "16px" }}>
+          <AlertTriangle size={16} />
+          <span><strong>Preview Error:</strong> {error}</span>
+        </div>
+      )}
+
+      {changes.warnings?.length > 0 && !error && (
+        <div className="notification" style={{ background: "#fefce8", color: "#854d0e", border: "1px solid #fef08a", marginBottom: "16px" }}>
+          <AlertTriangle size={16} />
+          <span><strong>Warnings:</strong> {changes.warnings.join("; ")}</span>
+        </div>
+      )}
+
+      {/* VIEW SELECTOR BUTTONS */}
+      <div className="pipeline-preview-tabs">
+        <button
+          type="button"
+          className={`pipeline-tab-btn ${viewMode === "output" ? "active" : ""}`}
+          onClick={() => setViewMode("output")}
+        >
+          Show Output ({after.rows} rows)
+        </button>
+        <button
+          type="button"
+          className={`pipeline-tab-btn ${viewMode === "input" ? "active" : ""}`}
+          onClick={() => setViewMode("input")}
+        >
+          Show Input ({before.rows} rows)
+        </button>
+        <button
+          type="button"
+          className={`pipeline-tab-btn ${viewMode === "schema" ? "active" : ""}`}
+          onClick={() => setViewMode("schema")}
+        >
+          Show Schema ({after.columns.length} cols)
+        </button>
+        <button
+          type="button"
+          className={`pipeline-tab-btn ${viewMode === "changes" ? "active" : ""}`}
+          onClick={() => setViewMode("changes")}
+        >
+          Show Changes
+        </button>
+      </div>
+
+      {/* TAB CONTENT */}
+      {loading ? (
+        <div style={{ textAlign: "center", padding: "30px" }}>
+          <div className="loading-spinner" style={{ margin: "0 auto 8px" }}></div>
+          <p style={{ color: "#64748b", fontSize: "13px" }}>Computing intermediate preview...</p>
+        </div>
+      ) : (
+        <>
+          {/* 1. OUTPUT / INPUT TABLE VIEW */}
+          {(viewMode === "output" || viewMode === "input") && (
+            <div className="pipeline-preview-table-wrapper">
+              {currentSample && currentSample.length > 0 ? (
+                <table className="cleaned-customer-table" style={{ width: "100%" }}>
+                  <thead>
+                    <tr>
+                      {currentCols.map((col) => (
+                        <th key={col}>{col}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {currentSample.map((row, rIdx) => (
+                      <tr key={rIdx}>
+                        {currentCols.map((col) => {
+                          const val = row[col];
+                          const isNull = val === null || val === undefined || val === "";
+                          return (
+                            <td key={col}>
+                              {isNull ? (
+                                <span className="pipeline-null-badge">null</span>
+                              ) : (
+                                String(val)
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p style={{ textAlign: "center", padding: "24px", color: "#64748b" }}>
+                  No records to display for this view.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* 2. SCHEMA VIEW */}
+          {viewMode === "schema" && (
+            <div className="pipeline-preview-table-wrapper">
+              <table className="cleaned-customer-table" style={{ width: "100%" }}>
+                <thead>
+                  <tr>
+                    <th>Column Name</th>
+                    <th>Input Type</th>
+                    <th>Output Type</th>
+                    <th>Null Values</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {after.schema?.map((col) => {
+                    const beforeMatch = before.schema?.find((b) => b.name === col.name);
+                    const isNew = !beforeMatch;
+                    const typeChanged = beforeMatch && beforeMatch.type !== col.type;
+                    return (
+                      <tr key={col.name}>
+                        <td style={{ fontWeight: "600" }}>{col.name}</td>
+                        <td>{beforeMatch ? beforeMatch.type : "—"}</td>
+                        <td><span className="pipeline-tag-pill">{col.type}</span></td>
+                        <td>{col.null_count > 0 ? `${col.null_count} nulls` : "0"}</td>
+                        <td>
+                          {isNew ? (
+                            <span className="pipeline-tag-pill added">+ Added</span>
+                          ) : typeChanged ? (
+                            <span className="pipeline-tag-pill" style={{ background: "#fef3c7", color: "#b45309" }}>Cast</span>
+                          ) : (
+                            <span className="pipeline-tag-pill">Preserved</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {before.schema
+                    ?.filter((b) => !after.columns.includes(b.name))
+                    .map((dropped) => (
+                      <tr key={`dropped_${dropped.name}`} style={{ opacity: 0.7 }}>
+                        <td style={{ textDecoration: "line-through", color: "#b91c1c" }}>{dropped.name}</td>
+                        <td>{dropped.type}</td>
+                        <td>—</td>
+                        <td>—</td>
+                        <td><span className="pipeline-tag-pill dropped">Dropped</span></td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* 3. CHANGES DIFF VIEW */}
+          {viewMode === "changes" && (
+            <div className="pipeline-diff-card">
+              <div className="pipeline-diff-section">
+                <h5>Row Adjustments</h5>
+                <p style={{ fontSize: "13px", color: "#475569", margin: "2px 0 0" }}>
+                  Input Rows: <strong>{before.rows}</strong> → Output Rows: <strong>{after.rows}</strong> (
+                  <span className={after.rows < before.rows ? "pipeline-delta-negative" : "pipeline-delta-positive"}>
+                    {after.rows - before.rows < 0
+                      ? `${before.rows - after.rows} rows removed`
+                      : `${after.rows - before.rows} rows added`}
+                  </span>
+                  )
+                </p>
+              </div>
+
+              <div className="pipeline-diff-section">
+                <h5>Columns Added ({changes.added_columns?.length || 0})</h5>
+                {changes.added_columns?.length > 0 ? (
+                  <div className="pipeline-tag-list">
+                    {changes.added_columns.map((c) => (
+                      <span key={c} className="pipeline-tag-pill added">+ {c}</span>
+                    ))}
+                  </div>
+                ) : (
+                  <span style={{ fontSize: "12px", color: "#94a3b8" }}>No new columns added in this step</span>
+                )}
+              </div>
+
+              <div className="pipeline-diff-section">
+                <h5>Columns Dropped ({changes.dropped_columns?.length || 0})</h5>
+                {changes.dropped_columns?.length > 0 ? (
+                  <div className="pipeline-tag-list">
+                    {changes.dropped_columns.map((c) => (
+                      <span key={c} className="pipeline-tag-pill dropped">- {c}</span>
+                    ))}
+                  </div>
+                ) : (
+                  <span style={{ fontSize: "12px", color: "#94a3b8" }}>No columns dropped in this step</span>
+                )}
+              </div>
+
+              {changes.type_changes?.length > 0 && (
+                <div className="pipeline-diff-section">
+                  <h5>Data Type Conversions</h5>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                    {changes.type_changes.map((tc, idx) => (
+                      <div key={idx} style={{ fontSize: "12px", color: "#334155" }}>
+                        Column <strong>{tc.column}</strong>: <code>{tc.from}</code> → <code>{tc.to}</code>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {changes.conversion_failures?.length > 0 && (
+                <div className="pipeline-diff-section">
+                  <h5 style={{ color: "#b45309" }}>Conversion Notes & Failures</h5>
+                  <ul style={{ margin: "4px 0 0", paddingLeft: "20px", fontSize: "12px", color: "#b45309" }}>
+                    {changes.conversion_failures.map((f, idx) => (
+                      <li key={idx}>{f}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+
+/* =========================================================
    PIPELINE WORKBENCH PAGE (STAGE 2)
 ========================================================= */
 
@@ -1401,7 +1854,8 @@ function PipelineWorkbenchPage({
   const [isSaving, setIsSaving] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
 
-  // STAGE 3: Preview and Execution State
+  // STAGE 3 & 4: Preview and Execution State
+  const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewStep, setPreviewStep] = useState(null);
   const [stepPreviewData, setStepPreviewData] = useState(null);
@@ -1975,7 +2429,10 @@ function PipelineWorkbenchPage({
                       type="button"
                       className="pipeline-step-btn"
                       title="Preview Step Output"
-                      onClick={() => handlePreviewStep(step)}
+                      onClick={() => {
+                        setActiveStepIndex(index);
+                        handlePreviewStep(step);
+                      }}
                     >
                       <Eye size={15} />
                     </button>
@@ -2028,6 +2485,14 @@ function PipelineWorkbenchPage({
           </div>
         )}
       </div>
+
+      {/* INTERMEDIATE DATA PREVIEW PANEL (STAGE 4 - FEATURE 3) */}
+      <IntermediatePreviewPanel
+        steps={steps}
+        records={result?.records}
+        activeStepIndex={activeStepIndex}
+        onSelectStepIndex={setActiveStepIndex}
+      />
 
       {/* STEP CONFIGURATION MODAL */}
       <StepConfigModal

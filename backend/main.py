@@ -54,8 +54,11 @@ class PipelinePayload(BaseModel):
 
 
 class StepPreviewPayload(BaseModel):
-    step: Dict[str, Any]
+    step: Optional[Dict[str, Any]] = None
+    step_index: Optional[int] = None
+    steps: Optional[List[Dict[str, Any]]] = None
     records: Optional[List[Dict[str, Any]]] = None
+    row_limit: Optional[int] = 25
 
 
 class PipelinePreviewPayload(BaseModel):
@@ -575,34 +578,108 @@ def _get_base_dataframe(records: Optional[List[Dict[str, Any]]] = None) -> pd.Da
 @app.post("/pipelines/preview-step")
 def preview_single_step(payload: StepPreviewPayload):
     """
-    Execute a single transformation step for intermediate preview.
-    Returns before & after sample records, column schemas, and telemetry.
+    Execute a single transformation step (or step at step_index within a sequence)
+    for intermediate data preview.
+    Returns input and output rows/columns, sample data, schema changes, conversion failures,
+    duration, and telemetry.
     """
     try:
-        df = _get_base_dataframe(payload.records)
-        cols_before = list(df.columns)
-        sample_before = dataframe_to_records(df.head(25))
+        base_df = _get_base_dataframe(payload.records)
+        row_limit = payload.row_limit or 25
 
-        out_df, telemetry = execute_step(df, payload.step, error_policy="continue_on_warning")
-        cols_after = list(out_df.columns)
-        sample_after = dataframe_to_records(out_df.head(25))
+        # If step_index and steps are provided, compute input to this step by running preceding steps
+        if payload.steps and payload.step_index is not None and 0 <= payload.step_index < len(payload.steps):
+            target_step = payload.steps[payload.step_index]
+            current_df = base_df.copy()
+            for i in range(payload.step_index):
+                current_df, _ = execute_step(current_df, payload.steps[i], error_policy="continue_on_warning")
+            df_in = current_df
+        elif payload.step:
+            target_step = payload.step
+            df_in = base_df.copy()
+        else:
+            raise HTTPException(status_code=400, detail="Must provide either 'step' or 'steps' with 'step_index'.")
+
+        cols_before = list(df_in.columns)
+        schema_before = [
+            {"name": col, "type": str(df_in[col].dtype), "null_count": int(df_in[col].isna().sum())}
+            for col in df_in.columns
+        ]
+        sample_before = dataframe_to_records(df_in.head(row_limit))
+
+        # Execute target step
+        df_out, telemetry = execute_step(df_in, target_step, error_policy="continue_on_warning")
+        cols_after = list(df_out.columns)
+        schema_after = [
+            {"name": col, "type": str(df_out[col].dtype), "null_count": int(df_out[col].isna().sum())}
+            for col in df_out.columns
+        ]
+        sample_after = dataframe_to_records(df_out.head(row_limit))
+
+        # Calculate schema diffs
+        added_columns = [c for c in cols_after if c not in cols_before]
+        dropped_columns = [c for c in cols_before if c not in cols_after]
+        type_changes = []
+        for col in cols_after:
+            if col in cols_before:
+                type_in = str(df_in[col].dtype)
+                type_out = str(df_out[col].dtype)
+                if type_in != type_out:
+                    type_changes.append({"column": col, "from": type_in, "to": type_out})
+
+        conversion_failures = [
+            w for w in telemetry.get("warnings", [])
+            if "unparseable" in w.lower() or "convert" in w.lower() or "dropped" in w.lower()
+        ]
 
         return {
-            "status": "success",
+            "status": telemetry.get("status", "success"),
+            "step_name": target_step.get("name", "Transformation Step"),
+            "step_type": target_step.get("type"),
             "step_telemetry": telemetry,
+            "duration_ms": telemetry.get("duration_ms", 0),
+            "rows_before": len(df_in),
+            "rows_after": len(df_out),
+            "row_delta": len(df_out) - len(df_in),
+            "cols_before_count": len(cols_before),
+            "cols_after_count": len(cols_after),
             "before": {
-                "rows": len(df),
+                "rows": len(df_in),
                 "columns": cols_before,
+                "schema": schema_before,
                 "sample": sample_before,
             },
             "after": {
-                "rows": len(out_df),
+                "rows": len(df_out),
                 "columns": cols_after,
+                "schema": schema_after,
                 "sample": sample_after,
+            },
+            "changes": {
+                "rows_removed": max(0, len(df_in) - len(df_out)),
+                "rows_added": max(0, len(df_out) - len(df_in)),
+                "added_columns": added_columns,
+                "dropped_columns": dropped_columns,
+                "type_changes": type_changes,
+                "warnings": telemetry.get("warnings", []),
+                "conversion_failures": conversion_failures,
+                "error": telemetry.get("error"),
             },
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Step preview failed: {e}")
+        return {
+            "status": "failed",
+            "error": str(e),
+            "step_telemetry": {
+                "status": "failed",
+                "error": str(e),
+                "duration_ms": 0,
+                "warnings": [],
+            },
+            "changes": {"error": str(e), "warnings": []},
+            "before": {"rows": 0, "columns": [], "sample": []},
+            "after": {"rows": 0, "columns": [], "sample": []},
+        }
 
 
 @app.post("/pipelines/preview-pipeline")

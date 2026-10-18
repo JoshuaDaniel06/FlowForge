@@ -19,8 +19,15 @@ from backend.database import (
     get_pipeline,
     get_public_tables,
     init_db,
+    list_pipeline_runs,
     list_pipelines,
+    record_pipeline_run,
     save_pipeline,
+)
+from backend.transformations import (
+    TransformationError,
+    execute_pipeline_transformations,
+    execute_step,
 )
 
 # ==========================================
@@ -44,6 +51,23 @@ class PipelinePayload(BaseModel):
     error_policy: Optional[str] = "stop_on_error"
     version: Optional[int] = 1
     status: Optional[str] = "saved"
+
+
+class StepPreviewPayload(BaseModel):
+    step: Dict[str, Any]
+    records: Optional[List[Dict[str, Any]]] = None
+
+
+class PipelinePreviewPayload(BaseModel):
+    steps: List[Dict[str, Any]]
+    records: Optional[List[Dict[str, Any]]] = None
+    error_policy: Optional[str] = "stop_on_error"
+
+
+class PipelineExecutionPayload(BaseModel):
+    pipeline_id: Optional[str] = None
+    pipeline: Optional[PipelinePayload] = None
+    records: Optional[List[Dict[str, Any]]] = None
 
 
 
@@ -388,6 +412,16 @@ def get_all_pipelines():
         raise HTTPException(status_code=500, detail=f"Failed to fetch pipelines: {e}")
 
 
+@app.get("/pipelines/runs")
+def get_pipeline_runs(pipeline_id: Optional[str] = None, limit: int = 50):
+    """Retrieve execution run history and telemetry from PostgreSQL."""
+    try:
+        runs = list_pipeline_runs(pipeline_id=pipeline_id, limit=limit)
+        return {"status": "success", "runs": runs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load run history: {e}")
+
+
 @app.get("/pipelines/{pipeline_id}")
 def get_pipeline_by_id(pipeline_id: str):
     """Retrieve a specific pipeline by ID."""
@@ -512,4 +546,217 @@ def validate_pipeline(pipeline: PipelinePayload):
         "warnings": warnings,
         "step_count": len(steps),
     }
+
+
+def _get_base_dataframe(records: Optional[List[Dict[str, Any]]] = None) -> pd.DataFrame:
+    """Helper to return DataFrame from records or fallback to root customers.csv."""
+    if records and len(records) > 0:
+        return pd.DataFrame(records)
+    
+    # Try loading customers.csv from project root
+    root_csv = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "customers.csv")
+    if os.path.exists(root_csv):
+        return pd.read_csv(root_csv)
+    
+    # Fallback to minimal dataframe
+    return pd.DataFrame({
+        "id": [1, 2, 3],
+        "name": ["Sample One", "Sample Two", "Sample Three"],
+        "email": ["one@example.com", "two@example.com", "three@example.com"],
+        "age": [25, 35, 45],
+        "city": ["New York", "London", "Tokyo"],
+    })
+
+
+# ==========================================
+# TRANSFORMATION EXECUTION & INTERMEDIATE PREVIEW
+# ==========================================
+
+@app.post("/pipelines/preview-step")
+def preview_single_step(payload: StepPreviewPayload):
+    """
+    Execute a single transformation step for intermediate preview.
+    Returns before & after sample records, column schemas, and telemetry.
+    """
+    try:
+        df = _get_base_dataframe(payload.records)
+        cols_before = list(df.columns)
+        sample_before = dataframe_to_records(df.head(25))
+
+        out_df, telemetry = execute_step(df, payload.step, error_policy="continue_on_warning")
+        cols_after = list(out_df.columns)
+        sample_after = dataframe_to_records(out_df.head(25))
+
+        return {
+            "status": "success",
+            "step_telemetry": telemetry,
+            "before": {
+                "rows": len(df),
+                "columns": cols_before,
+                "sample": sample_before,
+            },
+            "after": {
+                "rows": len(out_df),
+                "columns": cols_after,
+                "sample": sample_after,
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Step preview failed: {e}")
+
+
+@app.post("/pipelines/preview-pipeline")
+def preview_full_pipeline(payload: PipelinePreviewPayload):
+    """
+    Sequentially preview each step in a pipeline, capturing intermediate
+    row counts and schema changes at every stage of the ETL workflow.
+    """
+    try:
+        df = _get_base_dataframe(payload.records)
+        intermediate_snapshots = []
+        current_df = df.copy()
+
+        for idx, step in enumerate(payload.steps):
+            before_cols = list(current_df.columns)
+            before_rows = len(current_df)
+
+            current_df, telemetry = execute_step(
+                current_df, step, error_policy=payload.error_policy or "continue_on_warning"
+            )
+
+            intermediate_snapshots.append({
+                "step_index": idx,
+                "step_id": step.get("id") or f"step_{idx+1}",
+                "step_name": step.get("name") or f"Step {idx+1}",
+                "step_type": step.get("type"),
+                "telemetry": telemetry,
+                "rows_after": len(current_df),
+                "columns_after": list(current_df.columns),
+                "sample": dataframe_to_records(current_df.head(10)),
+            })
+
+        return {
+            "status": "success",
+            "initial_rows": len(df),
+            "final_rows": len(current_df),
+            "initial_columns": list(df.columns),
+            "final_columns": list(current_df.columns),
+            "snapshots": intermediate_snapshots,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Pipeline preview failed: {e}")
+
+
+@app.post("/pipelines/execute")
+def execute_pipeline_workflow(payload: PipelineExecutionPayload):
+    """
+    Execute a full pipeline workflow, persist output to PostgreSQL destination,
+    and record execution run telemetry.
+    """
+    # 1. Resolve pipeline definition
+    pipeline_def = None
+    if payload.pipeline:
+        pipeline_def = payload.pipeline.dict()
+    elif payload.pipeline_id:
+        pipeline_def = get_pipeline(payload.pipeline_id)
+
+    if not pipeline_def:
+        raise HTTPException(status_code=400, detail="Must provide either a valid 'pipeline_id' or 'pipeline' payload.")
+
+    pipeline_id = pipeline_def.get("id")
+    pipeline_name = pipeline_def.get("name", "Unnamed Pipeline")
+    steps = pipeline_def.get("steps") or []
+    destination = pipeline_def.get("destination") or {"type": "postgres", "table": "customers"}
+    error_policy = pipeline_def.get("error_policy") or "stop_on_error"
+
+    # 2. Prepare base dataset
+    df = _get_base_dataframe(payload.records)
+    input_rows = len(df)
+
+    # 3. Execute transformations
+    try:
+        final_df, step_telemetry, summary = execute_pipeline_transformations(
+            df, steps, error_policy=error_policy
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Pipeline execution engine failed: {e}")
+
+    # 4. Handle destination persistence
+    destination_status = "skipped"
+    destination_table = destination.get("table", "customers")
+    records_loaded = 0
+    dest_error = None
+
+    if destination.get("type") == "postgres" and not final_df.empty:
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+
+            # If writing to customers table
+            if destination_table == "customers":
+                records = dataframe_to_records(final_df)
+                for r in records:
+                    cursor.execute("""
+                        INSERT INTO customers (id, name, email, age, city, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        ON CONFLICT (id) DO UPDATE SET
+                            name = EXCLUDED.name,
+                            email = EXCLUDED.email,
+                            age = EXCLUDED.age,
+                            city = EXCLUDED.city,
+                            updated_at = CURRENT_TIMESTAMP;
+                    """, (
+                        r.get("id"),
+                        r.get("name"),
+                        r.get("email"),
+                        r.get("age"),
+                        r.get("city"),
+                    ))
+                conn.commit()
+                records_loaded = len(records)
+                destination_status = f"Successfully loaded {records_loaded} records to 'customers'."
+
+            cursor.close()
+            conn.close()
+        except Exception as dest_err:
+            dest_error = str(dest_err)
+            destination_status = f"PostgreSQL load failed: {dest_error}"
+
+    # 5. Persist run telemetry in PostgreSQL
+    completed_steps = sum(1 for s in step_telemetry if s.get("status") in ("success", "warning"))
+    failed_steps = sum(1 for s in step_telemetry if s.get("status") == "failed")
+    run_status = "success" if (summary["status"] == "success" and not dest_error) else "failed"
+
+    run_record = {
+        "pipeline_id": pipeline_id,
+        "pipeline_name": pipeline_name,
+        "status": run_status,
+        "duration_ms": int(summary.get("total_duration_ms", 0)),
+        "input_filename": "dataset_input",
+        "input_rows": input_rows,
+        "output_rows": len(final_df),
+        "completed_steps": completed_steps,
+        "failed_steps": failed_steps,
+        "destination_status": destination_status,
+        "destination_table": destination_table,
+        "error_message": dest_error,
+    }
+
+    try:
+        run_id = record_pipeline_run(run_record, step_telemetry)
+    except Exception as run_err:
+        print(f"Failed to record run telemetry: {run_err}")
+        run_id = "unknown"
+
+    return {
+        "status": run_status,
+        "run_id": run_id,
+        "summary": summary,
+        "step_telemetry": step_telemetry,
+        "destination_status": destination_status,
+        "records_loaded": records_loaded,
+        "records": dataframe_to_records(final_df.head(100)),
+        "columns": list(final_df.columns),
+    }
+
 

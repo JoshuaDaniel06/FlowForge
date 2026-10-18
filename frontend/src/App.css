@@ -5973,3 +5973,87 @@ body {
   border-top: 1px solid #e9edf2;
   background: #f8fafc;
 }
+
+.pipeline-preview-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 8px;
+  margin-bottom: 12px;
+}
+
+.pipeline-tab-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.pipeline-tab-btn.active {
+  background: #eff6ff;
+  color: #2563eb;
+  border-color: #bfdbfe;
+  font-weight: 600;
+}
+
+.pipeline-telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.pipeline-telemetry-badge {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.pipeline-telemetry-badge span {
+  font-size: 11px;
+  color: #64748b;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.pipeline-telemetry-badge strong {
+  font-size: 16px;
+  color: #0f172a;
+  margin-top: 2px;
+}
+
+.pipeline-preview-table-wrapper {
+  overflow-x: auto;
+  max-height: 320px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+
+.pipeline-step-telemetry-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: #ffffff;
+}
+
+.pipeline-delta-positive {
+  color: #16a34a;
+  font-weight: 600;
+}
+
+.pipeline-delta-negative {
+  color: #dc2626;
+  font-weight: 600;
+}

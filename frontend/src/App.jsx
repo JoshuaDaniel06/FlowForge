@@ -30,6 +30,9 @@ import {
   Edit2,
   Sliders,
   Layers,
+  Eye,
+  Clock,
+  PlayCircle,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -1097,6 +1100,261 @@ function StepConfigModal({
 }
 
 /* =========================================================
+   STEP PREVIEW MODAL (STAGE 3)
+========================================================= */
+
+function StepPreviewModal({
+  isOpen,
+  onClose,
+  step,
+  previewData,
+  isLoading,
+}) {
+  const [activeTab, setActiveTab] = useState("after");
+
+  if (!isOpen) return null;
+
+  const telemetry = previewData?.step_telemetry;
+  const beforeData = previewData?.before;
+  const afterData = previewData?.after;
+  const displayRecords = activeTab === "after" ? afterData?.sample : beforeData?.sample;
+  const displayCols = activeTab === "after" ? afterData?.columns : beforeData?.columns;
+
+  return (
+    <div className="cleaned-customer-overlay" onClick={onClose}>
+      <div className="cleaned-customer-modal" style={{ width: "min(850px, 95%)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="cleaned-customer-modal-header">
+          <div>
+            <h3>Step Preview: {step?.name || "Transformation"}</h3>
+            <p>Live execution telemetry and sample record inspection</p>
+          </div>
+          <button type="button" onClick={onClose}>×</button>
+        </div>
+
+        <div className="pipeline-modal-body">
+          {isLoading ? (
+            <div style={{ textAlign: "center", padding: "40px" }}>
+              <div className="loading-spinner" style={{ margin: "0 auto 12px" }}></div>
+              <p>Executing step transformation on dataset...</p>
+            </div>
+          ) : previewData ? (
+            <>
+              {/* TELEMETRY STATS */}
+              <div className="pipeline-telemetry-grid">
+                <div className="pipeline-telemetry-badge">
+                  <span>Status</span>
+                  <strong style={{ color: telemetry?.status === "success" ? "#16a34a" : "#ca8a04" }}>
+                    {telemetry?.status?.toUpperCase() || "SUCCESS"}
+                  </strong>
+                </div>
+                <div className="pipeline-telemetry-badge">
+                  <span>Duration</span>
+                  <strong>{telemetry?.duration_ms || 0} ms</strong>
+                </div>
+                <div className="pipeline-telemetry-badge">
+                  <span>Rows In</span>
+                  <strong>{telemetry?.rows_before ?? beforeData?.rows ?? 0}</strong>
+                </div>
+                <div className="pipeline-telemetry-badge">
+                  <span>Rows Out</span>
+                  <strong>{telemetry?.rows_after ?? afterData?.rows ?? 0}</strong>
+                </div>
+                <div className="pipeline-telemetry-badge">
+                  <span>Row Delta</span>
+                  <strong className={(telemetry?.row_delta || 0) < 0 ? "pipeline-delta-negative" : "pipeline-delta-positive"}>
+                    {(telemetry?.row_delta || 0) > 0 ? `+${telemetry?.row_delta}` : telemetry?.row_delta || 0}
+                  </strong>
+                </div>
+              </div>
+
+              {telemetry?.warnings?.length > 0 && (
+                <div className="notification" style={{ background: "#fefce8", color: "#854d0e", border: "1px solid #fef08a" }}>
+                  <AlertTriangle size={16} />
+                  <span>{telemetry.warnings.join("; ")}</span>
+                </div>
+              )}
+
+              {/* TABS */}
+              <div className="pipeline-preview-tabs">
+                <button
+                  type="button"
+                  className={`pipeline-tab-btn ${activeTab === "after" ? "active" : ""}`}
+                  onClick={() => setActiveTab("after")}
+                >
+                  Output After Step ({afterData?.rows ?? 0} rows)
+                </button>
+                <button
+                  type="button"
+                  className={`pipeline-tab-btn ${activeTab === "before" ? "active" : ""}`}
+                  onClick={() => setActiveTab("before")}
+                >
+                  Input Before Step ({beforeData?.rows ?? 0} rows)
+                </button>
+              </div>
+
+              {/* TABLE */}
+              <div className="pipeline-preview-table-wrapper">
+                {displayRecords && displayRecords.length > 0 ? (
+                  <table className="cleaned-customer-table" style={{ width: "100%" }}>
+                    <thead>
+                      <tr>
+                        {displayCols?.map((col) => (
+                          <th key={col}>{col}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {displayRecords.slice(0, 10).map((row, idx) => (
+                        <tr key={idx}>
+                          {displayCols?.map((col) => (
+                            <td key={col}>{row[col] !== null && row[col] !== undefined ? String(row[col]) : "—"}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p style={{ textAlign: "center", padding: "20px", color: "#64748b" }}>No sample records available</p>
+                )}
+              </div>
+            </>
+          ) : (
+            <p style={{ textAlign: "center", padding: "20px", color: "#64748b" }}>Preview could not be generated.</p>
+          )}
+        </div>
+
+        <div className="pipeline-modal-footer">
+          <button type="button" className="secondary-button" onClick={onClose}>Close Preview</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/* =========================================================
+   PIPELINE EXECUTION RESULTS MODAL (STAGE 3)
+========================================================= */
+
+function PipelineExecutionModal({
+  isOpen,
+  onClose,
+  executionResult,
+  pipelineName,
+}) {
+  if (!isOpen || !executionResult) return null;
+
+  const summary = executionResult.summary || {};
+  const telemetry = executionResult.step_telemetry || [];
+  const records = executionResult.records || [];
+  const columns = executionResult.columns || (records[0] ? Object.keys(records[0]) : []);
+
+  return (
+    <div className="cleaned-customer-overlay" onClick={onClose}>
+      <div className="cleaned-customer-modal" style={{ width: "min(900px, 95%)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="cleaned-customer-modal-header">
+          <div>
+            <h3>Workflow Execution: {pipelineName}</h3>
+            <p>Run ID: {executionResult.run_id} • Execution Complete</p>
+          </div>
+          <button type="button" onClick={onClose}>×</button>
+        </div>
+
+        <div className="pipeline-modal-body">
+          {/* SUMMARY GRID */}
+          <div className="pipeline-telemetry-grid">
+            <div className="pipeline-telemetry-badge">
+              <span>Run Status</span>
+              <strong style={{ color: executionResult.status === "success" ? "#16a34a" : "#dc2626" }}>
+                {executionResult.status?.toUpperCase()}
+              </strong>
+            </div>
+            <div className="pipeline-telemetry-badge">
+              <span>Total Duration</span>
+              <strong>{summary.total_duration_ms || 0} ms</strong>
+            </div>
+            <div className="pipeline-telemetry-badge">
+              <span>Steps Executed</span>
+              <strong>{summary.steps_executed} / {summary.total_steps}</strong>
+            </div>
+            <div className="pipeline-telemetry-badge">
+              <span>Records Loaded</span>
+              <strong style={{ color: "#2563eb" }}>{executionResult.records_loaded}</strong>
+            </div>
+            <div className="pipeline-telemetry-badge">
+              <span>Final Rows</span>
+              <strong>{summary.final_rows}</strong>
+            </div>
+          </div>
+
+          {executionResult.destination_status && (
+            <div className="notification" style={{ background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
+              <CircleCheck size={16} />
+              <span>{executionResult.destination_status}</span>
+            </div>
+          )}
+
+          {/* STEP BY STEP TELEMETRY */}
+          <h4 style={{ margin: "10px 0 6px", fontSize: "14px", fontWeight: "600", color: "#334155" }}>
+            Step Execution Telemetry
+          </h4>
+          <div style={{ maxHeight: "200px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "6px" }}>
+            {telemetry.map((t, idx) => (
+              <div key={idx} className="pipeline-step-telemetry-row">
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span style={{ fontSize: "12px", fontWeight: "600", color: "#64748b" }}>#{idx + 1}</span>
+                  <div>
+                    <strong style={{ fontSize: "13px", color: "#0f172a" }}>{t.step_name}</strong>
+                    <span className="pipeline-step-badge" style={{ marginLeft: "8px" }}>{t.type}</span>
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: "16px", fontSize: "12px" }}>
+                  <span>{t.duration_ms} ms</span>
+                  <span>{t.rows_before} → {t.rows_after} rows</span>
+                  <span className={t.row_delta < 0 ? "pipeline-delta-negative" : "pipeline-delta-positive"}>
+                    {t.row_delta > 0 ? `+${t.row_delta}` : t.row_delta}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* SAMPLE OUTPUT */}
+          <h4 style={{ margin: "14px 0 6px", fontSize: "14px", fontWeight: "600", color: "#334155" }}>
+            Cleaned Output Sample ({records.length} records shown)
+          </h4>
+          <div className="pipeline-preview-table-wrapper">
+            <table className="cleaned-customer-table" style={{ width: "100%" }}>
+              <thead>
+                <tr>
+                  {columns.map((col) => (
+                    <th key={col}>{col}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {records.slice(0, 10).map((row, idx) => (
+                  <tr key={idx}>
+                    {columns.map((col) => (
+                      <td key={col}>{row[col] !== null && row[col] !== undefined ? String(row[col]) : "—"}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="pipeline-modal-footer">
+          <button type="button" className="secondary-button" onClick={onClose}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/* =========================================================
    PIPELINE WORKBENCH PAGE (STAGE 2)
 ========================================================= */
 
@@ -1142,6 +1400,15 @@ function PipelineWorkbenchPage({
   const [bannerMessage, setBannerMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
+
+  // STAGE 3: Preview and Execution State
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
+  const [previewStep, setPreviewStep] = useState(null);
+  const [stepPreviewData, setStepPreviewData] = useState(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [execModalOpen, setExecModalOpen] = useState(false);
+  const [executionResult, setExecutionResult] = useState(null);
+  const [isExecuting, setIsExecuting] = useState(false);
 
   const availableColumns = result?.records?.[0]
     ? Object.keys(result.records[0])
@@ -1331,6 +1598,116 @@ function PipelineWorkbenchPage({
     }
   };
 
+  const handlePreviewStep = async (step) => {
+    setPreviewStep(step);
+    setPreviewModalOpen(true);
+    setIsPreviewLoading(true);
+    setStepPreviewData(null);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/preview-step`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          step,
+          records: result?.records || null,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setStepPreviewData(data);
+      } else {
+        const err = await res.json();
+        setBannerMessage(`Preview error: ${err.detail || "Failed to preview step."}`);
+      }
+    } catch (err) {
+      console.error(err);
+      setBannerMessage("Step preview request failed.");
+    } finally {
+      setIsPreviewLoading(false);
+    }
+  };
+
+  const handlePreviewPipelineFlow = async () => {
+    if (steps.length === 0) return;
+    setIsPreviewLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/pipelines/preview-pipeline`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          steps,
+          records: result?.records || null,
+          error_policy: errorPolicy,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const lastSnapshot = data.snapshots[data.snapshots.length - 1];
+        setPreviewStep({ name: `Full Pipeline Flow (${data.snapshots.length} Steps)` });
+        setStepPreviewData({
+          step_telemetry: {
+            status: data.status,
+            duration_ms: data.snapshots.reduce((acc, s) => acc + (s.telemetry?.duration_ms || 0), 0),
+            rows_before: data.initial_rows,
+            rows_after: data.final_rows,
+            row_delta: data.final_rows - data.initial_rows,
+          },
+          before: { rows: data.initial_rows, columns: data.initial_columns, sample: result?.records?.slice(0, 10) || [] },
+          after: { rows: data.final_rows, columns: data.final_columns, sample: lastSnapshot?.sample || [] },
+        });
+        setPreviewModalOpen(true);
+      }
+    } catch (err) {
+      console.error(err);
+      setBannerMessage("Pipeline flow preview failed.");
+    } finally {
+      setIsPreviewLoading(false);
+    }
+  };
+
+  const handleExecuteWorkflow = async () => {
+    setIsExecuting(true);
+    setBannerMessage("");
+    try {
+      const payload = {
+        pipeline: {
+          id: pipelineId || undefined,
+          name,
+          description,
+          input_source: { type: inputSource },
+          steps,
+          destination,
+          error_policy: errorPolicy,
+          version,
+          status: "saved",
+        },
+        records: result?.records || null,
+      };
+
+      const res = await fetch(`${API_URL}/pipelines/execute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || "Execution failed");
+      }
+
+      const data = await res.json();
+      setExecutionResult(data);
+      setExecModalOpen(true);
+      setBannerMessage(data.destination_status || "Pipeline executed successfully.");
+      loadSavedPipelines();
+    } catch (err) {
+      console.error(err);
+      setBannerMessage(`Execution failed: ${err.message}`);
+    } finally {
+      setIsExecuting(false);
+    }
+  };
+
   return (
     <div className="page-container">
       {/* STATS OVERVIEW */}
@@ -1514,6 +1891,14 @@ function PipelineWorkbenchPage({
             </button>
             <button
               type="button"
+              className="secondary-button"
+              onClick={handlePreviewPipelineFlow}
+              disabled={isPreviewLoading || steps.length === 0}
+            >
+              <Eye size={15} /> Preview Flow
+            </button>
+            <button
+              type="button"
               className="primary-button"
               onClick={handleSavePipeline}
               disabled={isSaving}
@@ -1526,9 +1911,10 @@ function PipelineWorkbenchPage({
             <button
               type="button"
               className="primary-button datamedic-load-mysql-button"
-              onClick={() => navigate("etl")}
+              onClick={handleExecuteWorkflow}
+              disabled={isExecuting || steps.length === 0}
             >
-              <Play size={15} /> Run Pipeline
+              <Play size={15} /> {isExecuting ? "Executing..." : "Run Pipeline"}
             </button>
           </div>
         </div>
@@ -1588,6 +1974,14 @@ function PipelineWorkbenchPage({
                     <button
                       type="button"
                       className="pipeline-step-btn"
+                      title="Preview Step Output"
+                      onClick={() => handlePreviewStep(step)}
+                    >
+                      <Eye size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="pipeline-step-btn"
                       title="Move Up"
                       disabled={index === 0}
                       onClick={() => handleMoveStep(index, -1)}
@@ -1642,6 +2036,23 @@ function PipelineWorkbenchPage({
         onSave={handleSaveStep}
         stepToEdit={editingStepIndex !== null ? steps[editingStepIndex] : null}
         availableColumns={availableColumns}
+      />
+
+      {/* STEP PREVIEW MODAL (STAGE 3) */}
+      <StepPreviewModal
+        isOpen={previewModalOpen}
+        onClose={() => setPreviewModalOpen(false)}
+        step={previewStep}
+        previewData={stepPreviewData}
+        isLoading={isPreviewLoading}
+      />
+
+      {/* PIPELINE EXECUTION MODAL (STAGE 3) */}
+      <PipelineExecutionModal
+        isOpen={execModalOpen}
+        onClose={() => setExecModalOpen(false)}
+        executionResult={executionResult}
+        pipelineName={name}
       />
     </div>
   );

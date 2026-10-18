@@ -342,3 +342,115 @@ def delete_pipeline(pipeline_id: str) -> bool:
     cursor.close()
     conn.close()
     return deleted
+
+
+def record_pipeline_run(run_data: dict, step_runs: list) -> str:
+    """Persist pipeline execution run and per-step metrics into PostgreSQL."""
+    import json
+    import time
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    run_id = run_data.get("run_id") or f"run_{int(time.time() * 1000)}"
+
+    cursor.execute("""
+        INSERT INTO pipeline_runs (
+            run_id, pipeline_id, pipeline_name, status, started_at, completed_at,
+            duration_ms, input_filename, input_rows, output_rows, completed_steps,
+            failed_steps, destination_status, destination_table, error_message
+        ) VALUES (
+            %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+            %s, %s, %s, %s, %s, %s, %s, %s, %s
+        );
+    """, (
+        run_id,
+        run_data.get("pipeline_id"),
+        run_data.get("pipeline_name", "Unnamed Pipeline"),
+        run_data.get("status", "success"),
+        int(run_data.get("duration_ms", 0)),
+        run_data.get("input_filename"),
+        int(run_data.get("input_rows", 0)),
+        int(run_data.get("output_rows", 0)),
+        int(run_data.get("completed_steps", 0)),
+        int(run_data.get("failed_steps", 0)),
+        run_data.get("destination_status"),
+        run_data.get("destination_table"),
+        run_data.get("error_message"),
+    ))
+
+    for idx, s in enumerate(step_runs):
+        cursor.execute("""
+            INSERT INTO pipeline_step_runs (
+                run_id, step_id, step_name, step_type, step_order,
+                status, duration_ms, rows_in, rows_out, warnings, error_details
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s
+            );
+        """, (
+            run_id,
+            s.get("step_id") or f"step_{idx+1}",
+            s.get("step_name") or f"Step {idx+1}",
+            s.get("type"),
+            idx + 1,
+            s.get("status", "success"),
+            int(s.get("duration_ms", 0)),
+            int(s.get("rows_before", 0)),
+            int(s.get("rows_after", 0)),
+            json.dumps(s.get("warnings", [])),
+            s.get("error"),
+        ))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return run_id
+
+
+def list_pipeline_runs(pipeline_id: str = None, limit: int = 50) -> list:
+    """List execution run history from PostgreSQL."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    if pipeline_id:
+        cursor.execute("""
+            SELECT run_id, pipeline_id, pipeline_name, status, started_at, duration_ms,
+                   input_filename, input_rows, output_rows, completed_steps, failed_steps,
+                   destination_status, destination_table, error_message
+            FROM pipeline_runs
+            WHERE pipeline_id = %s
+            ORDER BY started_at DESC
+            LIMIT %s;
+        """, (pipeline_id, limit))
+    else:
+        cursor.execute("""
+            SELECT run_id, pipeline_id, pipeline_name, status, started_at, duration_ms,
+                   input_filename, input_rows, output_rows, completed_steps, failed_steps,
+                   destination_status, destination_table, error_message
+            FROM pipeline_runs
+            ORDER BY started_at DESC
+            LIMIT %s;
+        """, (limit,))
+
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    return [
+        {
+            "run_id": r[0],
+            "pipeline_id": r[1],
+            "pipeline_name": r[2],
+            "status": r[3],
+            "started_at": r[4].isoformat() if r[4] else None,
+            "duration_ms": r[5],
+            "input_filename": r[6],
+            "input_rows": r[7],
+            "output_rows": r[8],
+            "completed_steps": r[9],
+            "failed_steps": r[10],
+            "destination_status": r[11],
+            "destination_table": r[12],
+            "error_message": r[13],
+        }
+        for r in rows
+    ]

@@ -28,7 +28,9 @@ from backend.database import (
     finish_pipeline_run,
     generate_execution_report,
     generate_report_csv_string,
+    get_app_settings,
     get_connection,
+    get_dashboard_summary,
     get_data_contract,
     get_pipeline,
     get_pipeline_run_details,
@@ -46,6 +48,8 @@ from backend.database import (
     save_pipeline,
     save_pipeline_contracts,
     save_pipeline_version,
+    test_db_connection,
+    update_app_settings,
     update_data_contract,
     validate_destination_mapping,
     write_dataframe_to_postgres,
@@ -74,7 +78,7 @@ class PipelinePayload(BaseModel):
     input_source: Optional[Dict[str, Any]] = {"type": "current_dataset"}
     steps: Optional[List[Dict[str, Any]]] = []
     destination: Optional[Dict[str, Any]] = {"type": "postgres", "table": "customers"}
-    error_policy: Optional[str] = "stop_on_error"
+    error_policy: Optional[str] = None
     version: Optional[int] = 1
     status: Optional[str] = "saved"
     data_contract: Optional[List[Dict[str, Any]]] = None
@@ -128,6 +132,8 @@ class PipelineExecutionPayload(BaseModel):
     pipeline: Optional[PipelinePayload] = None
     records: Optional[List[Dict[str, Any]]] = None
     data_contract: Optional[List[Dict[str, Any]]] = None
+    error_policy: Optional[str] = None
+    destination: Optional[Dict[str, Any]] = None
 
 
 class ValidateMappingPayload(BaseModel):
@@ -351,9 +357,14 @@ def list_tables():
 
 
 @app.get("/db/preview/{table_name}")
-def preview_table_data(table_name: str, limit: int = 50):
+def preview_table_data(table_name: str, limit: Optional[int] = None):
     """Safely preview records from a PostgreSQL table."""
     try:
+        if limit is None:
+            try:
+                limit = get_app_settings().get("preview_row_limit", 50)
+            except Exception:
+                limit = 50
         conn = get_connection()
         cursor = conn.cursor()
         
@@ -512,11 +523,16 @@ def list_db_tables():
 
 
 @app.get("/db/tables/{table_name}/preview")
-def preview_db_table(table_name: str, schema: str = "public", limit: int = 25):
+def preview_db_table(table_name: str, schema: str = "public", limit: Optional[int] = None):
     """
     Safely preview records and schema from a user table in PostgreSQL.
     """
     try:
+        if limit is None:
+            try:
+                limit = get_app_settings().get("preview_row_limit", 50)
+            except Exception:
+                limit = 25
         preview = preview_table(table_name=table_name, schema=schema, limit=limit)
         return {"status": "success", "preview": preview}
     except ValueError as val_err:
@@ -843,6 +859,67 @@ def export_run_report_csv(run_id: str):
             "Content-Disposition": f"attachment; filename=flowforge_report_{run_id}.csv"
         },
     )
+
+
+# =========================================================
+# STAGE 12 - DASHBOARD AND SETTINGS ENDPOINTS
+# =========================================================
+
+class SettingsPayload(BaseModel):
+    default_output_format: Optional[str] = None
+    preview_row_limit: Optional[int] = None
+    default_error_policy: Optional[str] = None
+
+
+@app.get("/dashboard/summary")
+def get_dashboard_metrics():
+    """Retrieve live dashboard overview metrics, counts, and recent failure diagnosis."""
+    try:
+        return get_dashboard_summary()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load dashboard summary: {e}")
+
+
+@app.get("/settings")
+def get_settings_endpoint():
+    """Retrieve persistent platform settings and PostgreSQL connection status."""
+    try:
+        settings = get_app_settings()
+        db_status = check_connection()
+        return {
+            "status": "success",
+            "settings": settings,
+            "database": db_status,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load settings: {e}")
+
+
+@app.post("/settings")
+@app.put("/settings")
+def update_settings_endpoint(payload: SettingsPayload):
+    """Update persistent platform execution settings in PostgreSQL."""
+    try:
+        data = {k: v for k, v in payload.dict().items() if v is not None}
+        updated = update_app_settings(data)
+        return {
+            "status": "success",
+            "message": "Settings updated successfully.",
+            "settings": updated,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update settings: {e}")
+
+
+@app.get("/settings/test-connection")
+@app.post("/settings/test-connection")
+def test_connection_endpoint():
+    """Execute live PostgreSQL roundtrip ping and return latency without exposing credentials."""
+    try:
+        res = test_db_connection()
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Test connection failed: {e}")
 
 
 @app.get("/pipelines/{pipeline_id}")
@@ -1305,7 +1382,11 @@ def preview_single_step(payload: StepPreviewPayload):
     """
     try:
         base_df = _get_base_dataframe(payload.records)
-        row_limit = payload.row_limit or 25
+        try:
+            default_row_lim = get_app_settings().get("preview_row_limit", 50)
+        except Exception:
+            default_row_lim = 25
+        row_limit = payload.row_limit or default_row_lim
 
         # If step_index and steps are provided, compute input to this step by running preceding steps
         if payload.steps and payload.step_index is not None and 0 <= payload.step_index < len(payload.steps):
@@ -1463,8 +1544,14 @@ def execute_pipeline_workflow(payload: PipelineExecutionPayload):
     pipeline_id = pipeline_def.get("id")
     pipeline_name = pipeline_def.get("name", "Unnamed Pipeline")
     steps = pipeline_def.get("steps") or []
-    destination = pipeline_def.get("destination") or {"type": "postgres", "table": "customers"}
-    error_policy = pipeline_def.get("error_policy") or "stop_on_error"
+    app_settings = get_app_settings()
+    default_fmt = app_settings.get("default_output_format", "postgres")
+    default_policy = app_settings.get("default_error_policy", "stop_on_error")
+
+    destination = payload.destination or pipeline_def.get("destination") or {"type": default_fmt, "table": "customers"}
+    if isinstance(destination, dict) and not destination.get("type"):
+        destination["type"] = default_fmt
+    error_policy = payload.error_policy or pipeline_def.get("error_policy") or default_policy
 
     # 2. Prepare base dataset
     df = _get_base_dataframe(payload.records)
@@ -1648,7 +1735,7 @@ def execute_pipeline_workflow(payload: PipelineExecutionPayload):
         "error_message": run_record["error_message"],
         "summary": summary,
         "step_telemetry": step_telemetry,
-        "records": dataframe_to_records(final_df.head(100)),
+        "records": dataframe_to_records(final_df.head(int(app_settings.get("preview_row_limit", 50)))),
         "columns": list(final_df.columns),
         "contract_validation": contract_validation,
     }

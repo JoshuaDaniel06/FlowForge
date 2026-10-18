@@ -1,4 +1,6 @@
 import os
+import json
+import time
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 import psycopg2
@@ -181,6 +183,28 @@ def init_db():
             ('pl_default_customers', 'Valid Age Range', 'age', TRUE, 'integer', TRUE, 18, 120, FALSE, '[]'::jsonb),
             ('pl_default_customers', 'Permitted Cities', 'city', FALSE, 'string', TRUE, NULL, NULL, FALSE, '[\"Chennai\", \"Madurai\", \"Coimbatore\", \"Bangalore\", \"Mumbai\"]'::jsonb);
         """)
+
+    # 8. Application settings
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key VARCHAR(64) PRIMARY KEY,
+            value JSONB NOT NULL,
+            updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+    # Seed default settings if missing
+    default_settings = {
+        "default_output_format": "postgres",
+        "preview_row_limit": 50,
+        "default_error_policy": "stop_on_error",
+    }
+    for k, v in default_settings.items():
+        cursor.execute("""
+            INSERT INTO app_settings (key, value)
+            VALUES (%s, %s::jsonb)
+            ON CONFLICT (key) DO NOTHING;
+        """, (k, json.dumps(v)))
 
     conn.commit()
     cursor.close()
@@ -1672,3 +1696,216 @@ def accept_pipeline_schema(pipeline_id: str, current_schema: list) -> list:
             updated_rules.append(update_data_contract(old_rule["id"], {"is_required": False}))
 
     return updated_rules
+
+
+# =========================================================
+# STAGE 12 - DASHBOARD AND SETTINGS INTEGRATION
+# =========================================================
+
+def get_app_settings() -> dict:
+    """Retrieve persistent platform configuration settings from PostgreSQL."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key VARCHAR(64) PRIMARY KEY,
+            value JSONB NOT NULL,
+            updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    cursor.execute("SELECT key, value FROM app_settings;")
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    settings = {
+        "default_output_format": "postgres",
+        "preview_row_limit": 50,
+        "default_error_policy": "stop_on_error",
+    }
+    for k, v in rows:
+        settings[k] = v
+    return settings
+
+
+def update_app_settings(updates: dict) -> dict:
+    """Validate and update persistent platform settings in PostgreSQL."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key VARCHAR(64) PRIMARY KEY,
+            value JSONB NOT NULL,
+            updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    for k, v in updates.items():
+        if k == "default_output_format" and v in ["postgres", "csv"]:
+            cursor.execute("""
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (%s, %s::jsonb, CURRENT_TIMESTAMP)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;
+            """, (k, json.dumps(v)))
+        elif k == "preview_row_limit":
+            try:
+                lim = int(v)
+                if 5 <= lim <= 1000:
+                    cursor.execute("""
+                        INSERT INTO app_settings (key, value, updated_at)
+                        VALUES (%s, %s::jsonb, CURRENT_TIMESTAMP)
+                        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;
+                    """, (k, json.dumps(lim)))
+            except (ValueError, TypeError):
+                pass
+        elif k == "default_error_policy" and v in ["stop_on_error", "continue_on_error"]:
+            cursor.execute("""
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (%s, %s::jsonb, CURRENT_TIMESTAMP)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;
+            """, (k, json.dumps(v)))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return get_app_settings()
+
+
+def test_db_connection() -> dict:
+    """Perform a live roundtrip latency test against PostgreSQL without exposing secrets."""
+    start = time.perf_counter()
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT current_database(), current_user, version();")
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+        return {
+            "status": "connected",
+            "latency_ms": elapsed_ms,
+            "database": row[0],
+            "user": row[1],
+            "host": os.getenv("POSTGRES_HOST", "localhost"),
+            "port": int(os.getenv("POSTGRES_PORT", 5432)),
+            "version": row[2].split(",")[0],
+            "message": f"Successfully connected to PostgreSQL '{row[0]}' in {elapsed_ms}ms.",
+        }
+    except Exception as e:
+        elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+        return {
+            "status": "disconnected",
+            "latency_ms": elapsed_ms,
+            "error": str(e),
+            "host": os.getenv("POSTGRES_HOST", "localhost"),
+            "port": int(os.getenv("POSTGRES_PORT", 5432)),
+            "database": os.getenv("POSTGRES_DB", "flowforge"),
+            "message": f"Connection failed after {elapsed_ms}ms: {e}",
+        }
+
+
+def get_dashboard_summary() -> dict:
+    """
+    Generate live dashboard overview metrics directly from PostgreSQL.
+    Includes saved pipeline count, successful/failed run counts, connection status,
+    recent runs, recently updated pipelines, and recent failure diagnosis.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # 1. Pipeline count
+    cursor.execute("SELECT COUNT(*) FROM pipelines;")
+    saved_pipelines_count = cursor.fetchone()[0]
+
+    # 2. Run counts
+    cursor.execute("""
+        SELECT 
+            COUNT(*) AS total_runs,
+            COUNT(*) FILTER (WHERE status = 'completed') AS successful_runs,
+            COUNT(*) FILTER (WHERE status = 'failed') AS failed_runs
+        FROM pipeline_runs;
+    """)
+    run_stats = cursor.fetchone()
+    total_runs = run_stats[0]
+    successful_runs = run_stats[1]
+    failed_runs = run_stats[2]
+
+    # 3. Recent runs (last 5)
+    cursor.execute("""
+        SELECT run_id, pipeline_id, pipeline_name, status, started_at, duration_ms, input_rows, output_rows, destination_status
+        FROM pipeline_runs
+        ORDER BY started_at DESC
+        LIMIT 5;
+    """)
+    recent_runs_rows = cursor.fetchall()
+    recent_runs = [
+        {
+            "run_id": r[0],
+            "pipeline_id": r[1],
+            "pipeline_name": r[2] or "Unnamed Pipeline",
+            "status": r[3],
+            "started_at": r[4].isoformat() if r[4] else None,
+            "duration_ms": r[5],
+            "input_rows": r[6],
+            "output_rows": r[7],
+            "destination_status": r[8],
+        }
+        for r in recent_runs_rows
+    ]
+
+    # 4. Recently updated pipelines (last 5)
+    cursor.execute("""
+        SELECT id, name, version, updated_at, jsonb_array_length(COALESCE(steps, '[]'::jsonb)) as step_count
+        FROM pipelines
+        ORDER BY updated_at DESC
+        LIMIT 5;
+    """)
+    recent_pipelines_rows = cursor.fetchall()
+    recent_pipelines = [
+        {
+            "id": p[0],
+            "name": p[1],
+            "version": p[2],
+            "updated_at": p[3].isoformat() if p[3] else None,
+            "step_count": p[4],
+        }
+        for p in recent_pipelines_rows
+    ]
+
+    # 5. Recent failure summary (latest failed run)
+    cursor.execute("""
+        SELECT run_id, pipeline_id, pipeline_name, started_at, error_message
+        FROM pipeline_runs
+        WHERE status = 'failed'
+        ORDER BY started_at DESC
+        LIMIT 1;
+    """)
+    fail_row = cursor.fetchone()
+    recent_failure = None
+    if fail_row:
+        recent_failure = {
+            "run_id": fail_row[0],
+            "pipeline_id": fail_row[1],
+            "pipeline_name": fail_row[2] or "Unnamed Pipeline",
+            "started_at": fail_row[3].isoformat() if fail_row[3] else None,
+            "error_message": fail_row[4] or "Unspecified pipeline error",
+        }
+
+    cursor.close()
+    conn.close()
+
+    db_status = check_connection()
+
+    return {
+        "status": "success",
+        "metrics": {
+            "saved_pipelines_count": saved_pipelines_count,
+            "successful_runs_count": successful_runs,
+            "failed_runs_count": failed_runs,
+            "total_runs_count": total_runs,
+            "postgres_status": db_status.get("status", "disconnected"),
+        },
+        "database": db_status,
+        "recent_runs": recent_runs,
+        "recent_pipelines": recent_pipelines,
+        "recent_failure": recent_failure,
+    }

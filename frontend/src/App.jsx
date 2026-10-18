@@ -40,6 +40,7 @@ import {
   FileText,
   Printer,
   ShieldCheck,
+  Settings,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -131,6 +132,11 @@ const NAV_ITEMS = [
   {
     section: "SYSTEM",
     items: [
+      {
+        id: "settings",
+        label: "Settings",
+        icon: Settings,
+      },
       {
         id: "api",
         label: "API Status",
@@ -360,6 +366,10 @@ function App() {
         title: "Data Sources",
         subtitle: "Inspect PostgreSQL connection status, metadata, and browse relational tables",
       },
+      settings: {
+        title: "Platform Settings",
+        subtitle: "Configure ETL execution defaults, output limits, and verify database connectivity",
+      },
       api: {
         title: "API Status",
         subtitle: "Monitor FlowForge backend availability",
@@ -500,6 +510,14 @@ function App() {
             loading={loading}
             downloadCleanedCSV={downloadCleanedCSV}
             loadToPostgres={loadToPostgres}
+            onNewPipeline={() => {
+              setWorkbenchPipelineId("NEW");
+              setActivePage("workbench");
+            }}
+            onOpenPipeline={(pId) => {
+              setWorkbenchPipelineId(pId);
+              setActivePage("workbench");
+            }}
           />
         )}
 
@@ -598,6 +616,10 @@ function App() {
             dbLoadResult={dbLoadResult}
             loadToPostgres={loadToPostgres}
           />
+        )}
+
+        {activePage === "settings" && (
+          <SettingsPage />
         )}
 
         {activePage === "api" && (
@@ -7295,144 +7317,580 @@ function OverviewPage({
   loading,
   downloadCleanedCSV,
   loadToPostgres,
+  onNewPipeline,
+  onOpenPipeline,
 }) {
+  const [dashboardData, setDashboardData] = useState(null);
+  const [dashLoading, setDashLoading] = useState(true);
+
+  useEffect(() => {
+    fetchDashboardSummary();
+  }, []);
+
+  const fetchDashboardSummary = async () => {
+    try {
+      const res = await fetch(`${API_URL}/dashboard/summary`);
+      if (res.ok) {
+        const data = await res.json();
+        setDashboardData(data);
+      }
+    } catch (err) {
+      console.warn("Failed to load dashboard summary:", err);
+    } finally {
+      setDashLoading(false);
+    }
+  };
+
+  const metrics = dashboardData?.metrics || {
+    saved_pipelines_count: 0,
+    successful_runs_count: 0,
+    failed_runs_count: 0,
+    postgres_status: "checking",
+  };
+  const recentRuns = dashboardData?.recent_runs || [];
+  const recentPipelines = dashboardData?.recent_pipelines || [];
+  const recentFailure = dashboardData?.recent_failure;
+
+  // Preserve dataset metrics if a dataset is currently staged
   const report = result?.quality_report ?? result;
-  const totalRecords = report?.total_records ?? "—";
-
-  const qualityScore = report?.quality_score ?? "—";
-
   const missingValues = report?.missing_values ?? 0;
-
   const duplicateRecords = report?.duplicate_records ?? 0;
-
   const invalidAges = report?.invalid_age_records ?? 0;
-
   const invalidEmails = report?.invalid_email_records ?? 0;
-
-    const issues =
-      result
-        ? missingValues + duplicateRecords + invalidAges + invalidEmails
-        : "—";
-
-  const cleanRecords = result
-    ? result.cleaned_records ?? Math.max(totalRecords - duplicateRecords, 0)
-    : "—";
 
   return (
     <div className="page-container">
-
-      {/* METRICS */}
-
+      {/* 1. FLOWFORGE LIVE PLATFORM METRICS */}
       <div className="stats">
         <StatCard
-          label="TOTAL RECORDS"
-          value={totalRecords}
-          description="Records in dataset"
-          icon={Database}
+          label="SAVED PIPELINES"
+          value={dashLoading ? "..." : metrics.saved_pipelines_count}
+          description="Configured ETL workflows"
+          icon={Sliders}
         />
 
         <StatCard
-          label="QUALITY SCORE"
-          value={`${qualityScore}%`}
-          description="Overall data quality"
+          label="SUCCESSFUL RUNS"
+          value={dashLoading ? "..." : metrics.successful_runs_count}
+          description="Completed executions"
           icon={CheckCircle2}
         />
 
         <StatCard
-          label="ISSUES DETECTED"
-          value={issues}
-          description="Quality issues found"
-          icon={AlertTriangle}
+          label="FAILED RUNS"
+          value={dashLoading ? "..." : metrics.failed_runs_count}
+          description="Failed executions requiring audit"
+          icon={XCircle}
         />
 
         <StatCard
-          label="CLEAN RECORDS"
-          value={cleanRecords}
-          description="Records after cleaning"
-          icon={FileCheck2}
+          label="POSTGRESQL STATUS"
+          value={metrics.postgres_status === "connected" ? "Connected" : "Disconnected"}
+          description={dashboardData?.database?.database ? `DB: ${dashboardData.database.database}` : "Local database"}
+          icon={Server}
         />
       </div>
 
-      {/* QUICK ACTIONS */}
-
+      {/* 2. DASHBOARD ACTION BUTTONS */}
       <div className="panel quick-actions-panel">
         <PanelHeader
           title="Quick Actions"
-          description="Work with your dataset"
+          description="ETL Workflow Engineering Shortcuts"
           icon={Activity}
         />
 
         <div className="quick-actions">
+          <QuickAction
+            icon={GitBranch}
+            title="New Pipeline"
+            description="Create and configure an ETL pipeline"
+            onClick={() => (onNewPipeline ? onNewPipeline() : navigate("workbench"))}
+            variant="analyze"
+          />
+
+          <QuickAction
+            icon={Clock}
+            title="View Recent Runs"
+            description="Audit execution history & telemetry"
+            onClick={() => navigate("run-history")}
+            variant="mysql"
+          />
 
           <QuickAction
             icon={UploadCloud}
-            title="Upload Dataset"
-            description="Select a CSV file"
+            title="Upload CSV"
+            description="Stage a new CSV dataset for transformation"
             onClick={() => navigate("upload")}
             variant="upload"
           />
 
           <QuickAction
-            icon={BarChart3}
-            title="Analyze Dataset"
-            description={loading ? "Analysis in progress" : "Run quality checks"}
-            onClick={analyzeFile}
-            variant="analyze"
-          />
-
-          <QuickAction
-            icon={Download}
-            title="Download Cleaned Data"
-            description="Export the cleaned CSV"
-            onClick={downloadCleanedCSV}
+            icon={Settings}
+            title="Platform Settings"
+            description="Configure execution defaults & database"
+            onClick={() => navigate("settings")}
             variant="download"
           />
-
-          <QuickAction
-            icon={Database}
-            title="Load to PostgreSQL"
-            description="Send cleaned records to the database"
-            onClick={loadToPostgres}
-            variant="mysql"
-          />
-
         </div>
       </div>
 
-      {/* DATA QUALITY GRAPH */}
+      {/* 3. RECENT FAILURE SUMMARY */}
+      {recentFailure ? (
+        <div className="failure-alert-card">
+          <div className="failure-alert-icon">
+            <XCircle size={22} color="#dc2626" />
+          </div>
+          <div className="failure-alert-content">
+            <div className="failure-alert-title">
+              Recent Execution Failure: {recentFailure.pipeline_name}
+            </div>
+            <div className="failure-alert-desc">
+              Run <code>{recentFailure.run_id}</code> failed at{" "}
+              {recentFailure.started_at ? new Date(recentFailure.started_at).toLocaleString() : "recently"}:{" "}
+              <strong>{recentFailure.error_message}</strong>
+            </div>
+            <div style={{ marginTop: "10px" }}>
+              <button
+                type="button"
+                className="secondary-button"
+                style={{ fontSize: "12px", padding: "4px 10px", borderColor: "#fca5a5", color: "#991b1b" }}
+                onClick={() => navigate("run-history")}
+              >
+                Inspect in Run History →
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="failure-alert-card clean">
+          <div className="failure-alert-icon">
+            <CheckCircle2 size={22} color="#16a34a" />
+          </div>
+          <div className="failure-alert-content">
+            <div className="failure-alert-title">All Pipelines Operating Smoothly</div>
+            <div className="failure-alert-desc">
+              Zero active execution failures detected. All configured pipelines are running cleanly.
+            </div>
+          </div>
+        </div>
+      )}
 
-      <div className="panel chart-panel overview-quality-panel">
-        <div className="panel-header chart-panel-header">
-          <div>
-            <h3>Data Quality Overview</h3>
-            <p>Detected issues by category</p>
+      {/* 4. SPLIT PANELS: RECENT PIPELINE RUNS & RECENTLY UPDATED PIPELINES */}
+      <div className="dashboard-split-panels">
+        {/* Recent Pipeline Runs Panel */}
+        <div className="panel" style={{ margin: 0 }}>
+          <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <Clock size={18} color="#2563eb" />
+              <div>
+                <h3 style={{ margin: 0, fontSize: "15px", fontWeight: 700 }}>Recent Pipeline Runs</h3>
+                <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>Latest execution history from PostgreSQL</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="view-analytics-button"
+              style={{ fontSize: "12px", padding: "4px 10px" }}
+              onClick={() => navigate("run-history")}
+            >
+              View All <ArrowRight size={13} />
+            </button>
           </div>
 
-           <button
-      className="view-analytics-button"
-      onClick={() => navigate("quality")}
-    >
-      View analytics
-      <ArrowRight size={15} />
-    </button>
+          {recentRuns.length === 0 ? (
+            <div style={{ padding: "30px 20px", textAlign: "center", color: "#64748b", fontSize: "13px" }}>
+              No execution runs recorded yet. Run a pipeline in the Workbench to see results.
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table className="pipeline-table" style={{ margin: 0 }}>
+                <thead>
+                  <tr>
+                    <th>Run ID</th>
+                    <th>Pipeline</th>
+                    <th>Status</th>
+                    <th>Duration</th>
+                    <th>Rows</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentRuns.map((r) => (
+                    <tr key={r.run_id}>
+                      <td>
+                        <code style={{ fontSize: "11px", color: "#2563eb", fontWeight: 600 }}>{r.run_id}</code>
+                      </td>
+                      <td style={{ fontWeight: 600, fontSize: "13px", color: "#1e293b" }}>{r.pipeline_name}</td>
+                      <td>
+                        <span className={`run-status-pill ${r.status}`}>
+                          {r.status === "completed" && <CheckCircle2 size={11} />}
+                          {r.status === "failed" && <XCircle size={11} />}
+                          {r.status}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: "12px" }}>{r.duration_ms} ms</td>
+                      <td style={{ fontSize: "12px" }}>
+                        <span>{r.input_rows}</span> → <strong style={{ color: "#1e293b" }}>{r.output_rows}</strong>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
-        {!result ? (
-          <EmptyState
-            icon={UploadCloud}
-            title="No Dataset Analyzed"
-            description="Upload and analyze a CSV dataset to see the quality graph."
-            buttonText="Upload Dataset"
-            onClick={() => navigate("upload")}
-          />
-        ) : (
+        {/* Recently Updated Pipelines Panel */}
+        <div className="panel" style={{ margin: 0 }}>
+          <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <Sliders size={18} color="#2563eb" />
+              <div>
+                <h3 style={{ margin: 0, fontSize: "15px", fontWeight: 700 }}>Recently Updated Pipelines</h3>
+                <p style={{ margin: 0, fontSize: "12px", color: "#64748b" }}>Saved ETL workflow versions</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="view-analytics-button"
+              style={{ fontSize: "12px", padding: "4px 10px" }}
+              onClick={() => navigate("saved-pipelines")}
+            >
+              View All <ArrowRight size={13} />
+            </button>
+          </div>
+
+          {recentPipelines.length === 0 ? (
+            <div style={{ padding: "30px 20px", textAlign: "center", color: "#64748b", fontSize: "13px" }}>
+              No pipelines saved yet. Click "New Pipeline" to design your first workflow.
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table className="pipeline-table" style={{ margin: 0 }}>
+                <thead>
+                  <tr>
+                    <th>Pipeline Name</th>
+                    <th>Version</th>
+                    <th>Steps</th>
+                    <th>Updated At</th>
+                    <th style={{ textAlign: "right" }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentPipelines.map((p) => (
+                    <tr key={p.id}>
+                      <td style={{ fontWeight: 600, fontSize: "13px", color: "#1e293b" }}>{p.name}</td>
+                      <td>
+                        <span className="pipeline-version-tag">v{p.version}</span>
+                      </td>
+                      <td style={{ fontSize: "12px", color: "#475569" }}>{p.step_count} steps</td>
+                      <td style={{ fontSize: "12px", color: "#64748b" }}>
+                        {p.updated_at ? new Date(p.updated_at).toLocaleDateString() : "—"}
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        <button
+                          type="button"
+                          className="run-action-btn"
+                          style={{ fontSize: "11px", padding: "3px 8px" }}
+                          onClick={() => (onOpenPipeline ? onOpenPipeline(p.id) : navigate("workbench"))}
+                        >
+                          <GitBranch size={11} color="#2563eb" /> Open
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* DATASET QUALITY GRAPH IF DATASET IS STAGED */}
+      {result && (
+        <div className="panel chart-panel overview-quality-panel" style={{ marginTop: "20px" }}>
+          <div className="panel-header chart-panel-header">
+            <div>
+              <h3>Data Quality Overview</h3>
+              <p>Detected issues for staged CSV dataset</p>
+            </div>
+            <button className="view-analytics-button" onClick={() => navigate("quality")}>
+              View analytics <ArrowRight size={15} />
+            </button>
+          </div>
           <QualityBarChart
             missingValues={missingValues}
             duplicateRecords={duplicateRecords}
             invalidAges={invalidAges}
             invalidEmails={invalidEmails}
           />
-        )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/* =========================================================
+   SETTINGS PAGE (STAGE 12 - FEATURE: SETTINGS INTEGRATION)
+========================================================= */
+
+function SettingsPage() {
+  const [settings, setSettings] = useState({
+    default_output_format: "postgres",
+    preview_row_limit: 50,
+    default_error_policy: "stop_on_error",
+  });
+  const [databaseInfo, setDatabaseInfo] = useState(null);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [banner, setBanner] = useState(null);
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  const loadSettings = async () => {
+    try {
+      const res = await fetch(`${API_URL}/settings`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.settings) setSettings(data.settings);
+        if (data.database) setDatabaseInfo(data.database);
+      }
+    } catch (err) {
+      console.warn("Failed to load settings:", err);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setTestingConnection(true);
+    setTestResult(null);
+    try {
+      const res = await fetch(`${API_URL}/settings/test-connection`, { method: "POST" });
+      const data = await res.json();
+      setTestResult(data);
+    } catch (err) {
+      setTestResult({
+        status: "disconnected",
+        message: "Failed to connect to backend: " + err.message,
+      });
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  const handleSaveSettings = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${API_URL}/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings),
+      });
+      if (!res.ok) throw new Error("Failed to save settings");
+      const data = await res.json();
+      setSettings(data.settings);
+      setBanner({ type: "success", text: "Settings saved successfully and applied to execution engine." });
+      setTimeout(() => setBanner(null), 3500);
+    } catch (err) {
+      setBanner({ type: "error", text: "Save failed: " + err.message });
+      setTimeout(() => setBanner(null), 4000);
+    }
+  };
+
+  const handleResetDefaults = () => {
+    setSettings({
+      default_output_format: "postgres",
+      preview_row_limit: 50,
+      default_error_policy: "stop_on_error",
+    });
+    setBanner({ type: "warning", text: "Reset form to platform defaults. Click 'Save Settings' to apply." });
+    setTimeout(() => setBanner(null), 3000);
+  };
+
+  return (
+    <div className="page-container">
+      {banner && (
+        <div className={`contract-banner-summary ${banner.type}`} style={{ marginBottom: "20px" }}>
+          {banner.type === "success" && <CheckCircle2 size={16} />}
+          {banner.type === "error" && <XCircle size={16} />}
+          {banner.type === "warning" && <AlertTriangle size={16} />}
+          <span>{banner.text}</span>
+        </div>
+      )}
+
+      <div className="settings-container">
+        {/* CARD 1: DATABASE CONNECTIVITY & ENVIRONMENT */}
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div className="settings-card-icon">
+              <Server size={22} />
+            </div>
+            <div>
+              <h3 className="settings-card-title">PostgreSQL Database Connectivity</h3>
+              <div className="settings-card-subtitle">
+                Backend connection status, database parameters, and roundtrip ping diagnostics
+              </div>
+            </div>
+          </div>
+
+          <div className="settings-grid">
+            <div className="settings-info-box">
+              <div className="settings-info-label">Status</div>
+              <div className="settings-info-value" style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <span className={`run-status-pill ${databaseInfo?.status === "connected" ? "completed" : "failed"}`}>
+                  {databaseInfo?.status === "connected" ? <CheckCircle2 size={11} /> : <XCircle size={11} />}
+                  {databaseInfo?.status === "connected" ? "Connected" : "Disconnected"}
+                </span>
+              </div>
+            </div>
+
+            <div className="settings-info-box">
+              <div className="settings-info-label">Database Name</div>
+              <div className="settings-info-value">{databaseInfo?.database || "flowforge"}</div>
+            </div>
+
+            <div className="settings-info-box">
+              <div className="settings-info-label">Database Host</div>
+              <div className="settings-info-value">{databaseInfo?.host || "localhost"}</div>
+            </div>
+
+            <div className="settings-info-box">
+              <div className="settings-info-label">Port</div>
+              <div className="settings-info-value">{databaseInfo?.port || 5432}</div>
+            </div>
+
+            <div className="settings-info-box">
+              <div className="settings-info-label">Database User</div>
+              <div className="settings-info-value">{databaseInfo?.user || "postgres"}</div>
+            </div>
+
+            <div className="settings-info-box">
+              <div className="settings-info-label">PostgreSQL Version</div>
+              <div className="settings-info-value" style={{ fontSize: "11px", color: "#64748b" }}>
+                {databaseInfo?.version || "PostgreSQL 18"}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "12px", marginTop: "12px" }}>
+            <div style={{ fontSize: "12px", color: "#64748b", display: "flex", alignItems: "center", gap: "6px" }}>
+              <ShieldCheck size={16} color="#16a34a" />
+              <span>Database credentials are encrypted in backend <code>.env</code> and not editable via browser.</span>
+            </div>
+
+            <button
+              type="button"
+              className="primary-button"
+              style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+              onClick={handleTestConnection}
+              disabled={testingConnection}
+            >
+              {testingConnection ? <Activity className="spin" size={14} /> : <RefreshCw size={14} />}
+              {testingConnection ? "Pinging..." : "Test Connection"}
+            </button>
+          </div>
+
+          {testResult && (
+            <div
+              className={`contract-banner-summary ${testResult.status === "connected" ? "success" : "error"}`}
+              style={{ marginTop: "16px" }}
+            >
+              {testResult.status === "connected" ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
+              <div>
+                <strong>{testResult.status === "connected" ? "Connection Verified: " : "Connection Error: "}</strong>
+                <span>{testResult.message}</span>
+                {testResult.latency_ms && (
+                  <span style={{ marginLeft: "8px", fontWeight: 700 }}>
+                    (Roundtrip Latency: {testResult.latency_ms} ms)
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* CARD 2: ETL PIPELINE EXECUTION DEFAULTS */}
+        <form onSubmit={handleSaveSettings} className="settings-card">
+          <div className="settings-card-header">
+            <div className="settings-card-icon" style={{ background: "#f5f3ff", color: "#7c3aed" }}>
+              <Sliders size={22} />
+            </div>
+            <div>
+              <h3 className="settings-card-title">ETL Pipeline Execution Defaults</h3>
+              <div className="settings-card-subtitle">
+                Configure default output destination formats, error recovery policies, and preview row limits
+              </div>
+            </div>
+          </div>
+
+          {/* Default Output Format */}
+          <div className="settings-form-row">
+            <label className="settings-form-label">Default Output Format</label>
+            <div className="settings-form-desc">
+              Select the default destination target applied when running pipeline workflows
+            </div>
+            <select
+              className="settings-select"
+              value={settings.default_output_format}
+              onChange={(e) => setSettings({ ...settings, default_output_format: e.target.value })}
+            >
+              <option value="postgres">PostgreSQL Relational Table (postgres)</option>
+              <option value="csv">Downloadable CSV Stream (csv)</option>
+            </select>
+          </div>
+
+          {/* Preview Row Limit */}
+          <div className="settings-form-row">
+            <label className="settings-form-label">Preview Row Limit</label>
+            <div className="settings-form-desc">
+              Maximum row samples fetched during intermediate step previews and dataset inspection
+            </div>
+            <select
+              className="settings-select"
+              value={settings.preview_row_limit}
+              onChange={(e) => setSettings({ ...settings, preview_row_limit: Number(e.target.value) })}
+            >
+              <option value={25}>25 Rows</option>
+              <option value={50}>50 Rows (Recommended)</option>
+              <option value={100}>100 Rows</option>
+              <option value={200}>200 Rows</option>
+            </select>
+          </div>
+
+          {/* Default Error Policy */}
+          <div className="settings-form-row">
+            <label className="settings-form-label">Default Error Policy</label>
+            <div className="settings-form-desc">
+              Behavior when an individual transformation step encounters an execution error
+            </div>
+            <select
+              className="settings-select"
+              value={settings.default_error_policy}
+              onChange={(e) => setSettings({ ...settings, default_error_policy: e.target.value })}
+            >
+              <option value="stop_on_error">Stop on Error (Halt pipeline immediately)</option>
+              <option value="continue_on_error">Continue on Error (Skip failing step & continue)</option>
+            </select>
+          </div>
+
+          <div className="settings-actions-footer">
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={handleResetDefaults}
+            >
+              Reset to Defaults
+            </button>
+
+            <button
+              type="submit"
+              className="primary-button"
+            >
+              Save Settings
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

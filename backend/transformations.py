@@ -191,7 +191,7 @@ def transform_filter_rows(df: pd.DataFrame, params: Dict[str, Any]) -> Tuple[pd.
     # Value-based comparisons
     coerced_val = _coerce_filter_value(raw_val, series)
 
-    if op in ("=", "=="):
+    if op in ("=", "==", "equals", "eq", "is"):
         if pd.api.types.is_string_dtype(series) or series.dtype == object:
             if not case_sensitive:
                 mask = series.astype(str).str.lower() == str(raw_val).lower()
@@ -203,7 +203,7 @@ def transform_filter_rows(df: pd.DataFrame, params: Dict[str, Any]) -> Tuple[pd.
             except Exception:
                 mask = series.astype(str) == str(raw_val)
 
-    elif op in ("!=", "<>"):
+    elif op in ("!=", "<>", "not_equals", "neq", "not_eq"):
         if pd.api.types.is_string_dtype(series) or series.dtype == object:
             if not case_sensitive:
                 mask = series.astype(str).str.lower() != str(raw_val).lower()
